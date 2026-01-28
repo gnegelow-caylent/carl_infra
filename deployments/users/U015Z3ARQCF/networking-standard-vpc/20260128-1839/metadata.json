@@ -1,0 +1,22 @@
+{
+  "compliance_notes": [
+    "3-AZ HA deployment (A1.1)",
+    "NAT Gateway per AZ for fault tolerance",
+    "VPC Flow Logs to S3 with lifecycle (CC7.2)",
+    "VPC Endpoints reduce data transfer costs",
+    "Network ACLs for defense in depth (CC6.6)",
+    "Default SG denies all traffic (CC6.6)"
+  ],
+  "deployment_steps": [
+    "1. Review and customize variables",
+    "2. Run: terraform init",
+    "3. Run: terraform plan",
+    "4. Run: terraform apply",
+    "5. Configure WAF when adding ALB"
+  ],
+  "config": {
+    "name": "gneg",
+    "environment": "dev",
+    "cidr": "10.3.0.0/16"
+  }
+}
