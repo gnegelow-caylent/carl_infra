@@ -1,0 +1,87 @@
+```hcl
+# AWS Region for resource deployment
+aws_region = "us-east-1"
+
+# Resource naming prefix for all AWS resources
+resource_prefix = "test"
+
+# Environment designation (dev, staging, prod)
+environment = "dev"
+
+# VPC CIDR block for network isolation
+vpc_cidr = "10.3.0.0/16"
+
+# Enable Transit Gateway integration (false for this setup)
+enable_transit_gateway = false
+
+# S3 bucket configuration for static websites
+s3_buckets = [
+  {
+    name                = "test-website-1"
+    domain_name         = "website1.example.com"
+    enable_versioning   = true
+    enable_logging      = true
+    log_retention_days  = 90
+    encryption_type     = "SSE-S3" # Options: SSE-S3, SSE-KMS
+  },
+  {
+    name                = "test-website-2"
+    domain_name         = "website2.example.com"
+    enable_versioning   = true
+    enable_logging      = true
+    log_retention_days  = 90
+    encryption_type     = "SSE-S3"
+  },
+  {
+    name                = "test-website-3"
+    domain_name         = "website3.example.com"
+    enable_versioning   = true
+    enable_logging      = true
+    log_retention_days  = 90
+    encryption_type     = "SSE-S3"
+  }
+]
+
+# CloudFront distribution settings
+cloudfront_config = {
+  enabled             = true
+  is_ipv6_enabled     = true
+  default_ttl         = 3600
+  max_ttl             = 86400
+  min_ttl             = 0
+  compress            = true
+  price_class         = "PriceClass_100" # Options: PriceClass_100, PriceClass_200, PriceClass_All
+  enable_logging      = true
+  log_retention_days  = 90
+}
+
+# Route 53 hosted zone configuration (set to empty string if not using custom domains)
+route53_hosted_zone_id = ""
+
+# CloudTrail configuration for SOC 2 CC6.1 compliance (access audit logs)
+enable_cloudtrail = true
+cloudtrail_log_retention_days = 365
+
+# S3 access logging bucket (centralized logging for all S3 buckets)
+enable_s3_access_logging = true
+s3_log_bucket_name = "test-s3-access-logs"
+
+# KMS key configuration (required if using SSE-KMS encryption)
+enable_kms_encryption = false
+kms_key_rotation_enabled = true
+
+# CloudFront signed URLs for access control (if content needs authentication)
+enable_signed_urls = false
+
+# Tags applied to all resources
+common_tags = {
+  Project     = "static-websites"
+  ManagedBy   = "terraform"
+  Compliance  = "SOC2"
+  CostCenter  = "engineering"
+}
+
+# Enable detailed monitoring and alerting
+enable_monitoring = true
+alert_email = "ops@example.com"
+```

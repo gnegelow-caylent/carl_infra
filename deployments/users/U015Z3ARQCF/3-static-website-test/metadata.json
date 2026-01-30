@@ -1,0 +1,27 @@
+{
+  "requirement": "3 static website",
+  "option_text": "OPTION 1: S3 + CloudFront (Standard Setup)\nRECOMMENDED\nBest for: Static websites with global users, simple to manage\nCost: $3-15/month (all 3 sites combined, depending on traffic)\n\nKey points:\n- S3 buckets (one per website) with static website hosting enabled\n- CloudFront distributions for CDN/HTTPS delivery and low latency globally\n- Route 53 for custom domain names (if needed)\n- S3 storage: ~$0.35/month for 15GB total across 3 sites (at $0.023/GB)\n- CloudFront: ~$0.85/GB data transfer (first 10TB), plus ~$0.0075 per 10,000 HTTPS requests\n- Automatic scaling - handles traffic spikes without configuration\n- HTTPS certificates via AWS Certificate Manager (free)\n- Enable S3 versioning for rollback capability\n- Block public access to S3, serve only through CloudFront for security\n\nSOC 2 Compliance:\n- Enable CloudTrail for access audit logs (addresses CC6.1)\n- Use S3 SSE-S3 or SSE-KMS encryption at rest (addresses CC6.6, CC6.7)\n- Implement CloudFront signed URLs if content needs access control\n- Enable S3 access logging\n\nTradeoffs: Requires DNS setup per domain, but very low operational overhead. Best price/performance ratio.",
+  "vpc_id": null,
+  "vpc_cidr": "10.3.0.0/16",
+  "prefix": "test",
+  "environment": "dev",
+  "use_transit_gateway": false,
+  "generated_at": "2026-01-30T22:40:26.890271",
+  "generated_by": "CARL AI-driven infrastructure builder",
+  "soc2_controls": [
+    "CC",
+    "A",
+    "PI"
+  ],
+  "security_practices": [
+    "Encryption at rest (KMS)",
+    "Encryption in transit (TLS/SSL)",
+    "CloudWatch monitoring",
+    "CloudTrail logging",
+    "KMS encryption",
+    "Versioning enabled",
+    "MFA protection",
+    "AWS WAF protection",
+    "Access logging enabled"
+  ]
+}
