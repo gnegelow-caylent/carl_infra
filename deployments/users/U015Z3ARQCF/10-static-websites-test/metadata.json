@@ -1,0 +1,13 @@
+{
+  "requirement": "10 static websites",
+  "option_text": "OPTION 1: S3 + CloudFront (Multi-Site with CDN)\nRECOMMENDED\nBest for: Production-ready, fast global delivery with HTTPS and custom domains\nCost: $15-40/month for all 10 sites\n\nKey points:\n- Create 10 S3 buckets (one per site) with static website hosting disabled and private access\n- Use CloudFront distributions (one per site) to serve content over HTTPS\n- CloudFront provides SSL/TLS certificates via ACM at no extra cost\n- Route 53 for custom domain management (if needed)\n- Benefits: Global CDN caching, built-in DDoS protection, better performance, custom domains with SSL\n- S3 storage: approximately 0.023/GB/month (10GB total = $0.23/month)\n- CloudFront: 1TB data transfer free tier, then $0.085/GB, minimal request fees\n- Good for SOC 2: encryption in transit (HTTPS), CloudFront access logs, S3 server access logs\n- Tradeoff: Slightly more complex setup but production-grade",
+  "vpc_id": null,
+  "vpc_cidr": "10.1.0.0/16",
+  "prefix": "test",
+  "environment": "dev",
+  "use_transit_gateway": false,
+  "generated_at": "2026-01-30T22:04:04.014786",
+  "generated_by": "CARL AI-driven infrastructure builder",
+  "soc2_controls": [],
+  "security_practices": []
+}
