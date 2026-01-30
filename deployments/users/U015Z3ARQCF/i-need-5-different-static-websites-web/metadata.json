@@ -1,0 +1,13 @@
+{
+  "requirement": "i need 5 different static websites",
+  "option_text": "OPTION 1: S3 + CloudFront (5 websites)\nRECOMMENDED\nBest for: Cost-effective hosting with global CDN and full control\nCost: $15-40/month (for all 5 websites)\n\nKey points:\n- Create 5 S3 buckets (one per website) configured for static website hosting with encryption, versioning, and access logging\n- CloudFront distributions in front of each S3 bucket for HTTPS, global caching, and DDoS protection with AWS Shield Standard\n- Route53 for custom domain management if needed (each website can have its own domain)\n- Enable S3 server access logging for compliance and monitoring\n- Use AWS WAF on CloudFront for additional security (optional, adds $5-10/month per site)\n- Estimated costs: S3 storage (~$0.23/month for 10GB per site), CloudFront data transfer (~$2-6/month per site depending on traffic), minimal request costs\n- SOC 2 compliant with proper configuration: encryption at rest, access controls, logging enabled\n- Supports custom SSL certificates via ACM (free)\n\nTradeoffs:\n- Requires manual configuration for each website\n- Need to manage S3 bucket policies and CloudFront distributions separately\n- Best value for price and flexibility",
+  "vpc_id": null,
+  "vpc_cidr": "10.2.0.0/16",
+  "prefix": "web",
+  "environment": "dev",
+  "use_transit_gateway": false,
+  "generated_at": "2026-01-30T21:30:21.843178",
+  "generated_by": "CARL AI-driven infrastructure builder",
+  "soc2_controls": [],
+  "security_practices": []
+}
