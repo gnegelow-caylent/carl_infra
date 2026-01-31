@@ -1,0 +1,135 @@
+```hcl
+# AWS Region and General Configuration
+aws_region = "us-east-1"
+
+# Resource Naming and Tagging
+resource_prefix = "test"
+environment      = "dev"
+
+# VPC Configuration
+vpc_cidr = "10.21.0.0/16"
+
+# Availability Zones (must be 2 for Multi-AZ setup)
+availability_zones = ["us-east-1a", "us-east-1b"]
+
+# Subnet CIDR Configuration (using /20 subnets as recommended)
+# Public subnets for ALB (1 per AZ)
+public_subnet_cidrs = [
+  "10.21.0.0/20",   # us-east-1a public
+  "10.21.16.0/20"   # us-east-1b public
+]
+
+# Private app subnets for ECS Fargate (1 per AZ)
+app_subnet_cidrs = [
+  "10.21.32.0/20",  # us-east-1a app
+  "10.21.48.0/20"   # us-east-1b app
+]
+
+# Private data subnets for RDS (1 per AZ)
+data_subnet_cidrs = [
+  "10.21.64.0/20",  # us-east-1a data
+  "10.21.80.0/20"   # us-east-1b data
+]
+
+# NAT Gateway Configuration
+enable_nat_gateway = true
+single_nat_gateway = false  # Set to true to save costs, false for high availability
+
+# VPC Flow Logs Configuration
+enable_vpc_flow_logs = true
+vpc_flow_logs_retention_days = 30
+vpc_flow_logs_s3_prefix      = "vpc-flow-logs/"
+
+# Application Load Balancer Configuration
+alb_name                = "test-alb"
+alb_internal            = false
+enable_deletion_protection = false
+alb_idle_timeout        = 60
+
+# ECS Fargate Configuration
+ecs_cluster_name = "test-cluster"
+
+# ECS Service Configuration
+ecs_service_name        = "test-app-service"
+ecs_task_family         = "test-app-task"
+ecs_container_name      = "test-app-container"
+ecs_container_image     = "nginx:latest"  # Replace with your container image
+ecs_container_port      = 80
+ecs_container_cpu       = "512"           # 0.5 vCPU in millicores
+ecs_container_memory    = "1024"          # 1 GB in MB
+ecs_task_cpu            = "512"
+ecs_task_memory         = "1024"
+
+# ECS Auto Scaling Configuration
+ecs_desired_count       = 2    # Minimum tasks running
+ecs_min_capacity        = 2    # Minimum for auto-scaling
+ecs_max_capacity        = 10   # Maximum for auto-scaling
+ecs_target_cpu_utilization = 70
+ecs_target_memory_utilization = 80
+scale_up_cooldown       = 60
+scale_down_cooldown     = 300
+
+# RDS Configuration
+rds_engine               = "postgres"  # or "mysql"
+rds_engine_version       = "15.3"      # Adjust based on engine choice
+rds_instance_class       = "db.t3.small"
+rds_allocated_storage    = 20          # GB
+rds_storage_type         = "gp3"
+rds_iops                 = 3000
+rds_db_name              = "testappdb"
+rds_username             = "dbadmin"
+# rds_password should be set via environment variable or AWS Secrets Manager
+# DO NOT commit actual password to version control
+rds_multi_az             = true
+rds_backup_retention_days = 30
+rds_backup_window        = "03:00-04:00"
+rds_maintenance_window   = "mon:04:00-mon:05:00"
+rds_skip_final_snapshot  = false
+rds_final_snapshot_identifier = "test-app-db-final-snapshot"
+rds_enable_encryption    = true
+rds_enable_enhanced_monitoring = true
+rds_monitoring_interval  = 60
+
+# RDS Security Configuration
+rds_publicly_accessible  = false
+rds_enable_iam_database_authentication = true
+
+# KMS Encryption Configuration
+enable_kms_encryption    = true
+kms_key_rotation_enabled = true
+
+# Security Group Configuration
+enable_security_group_logging = true
+
+# CloudWatch Configuration
+cloudwatch_log_retention_days = 30
+enable_detailed_monitoring    = true
+
+# Backup and Disaster Recovery
+enable_automated_backups = true
+backup_retention_days    = 30
+
+# Tags to apply to all resources
+common_tags = {
+  Project     = "test-app"
+  Environment = "dev"
+  ManagedBy   = "Terraform"
+  SOC2Ready   = "true"
+}
+
+# Transit Gateway (disabled per configuration)
+enable_transit_gateway = false
+
+# Optional: Container Registry Configuration
+ecr_repository_name = "test-app"
+ecr_image_tag_mutability = "MUTABLE"
+ecr_scan_on_push    = true
+
+# Optional: Secrets Manager for sensitive data
+enable_secrets_manager = true
+secrets_rotation_days  = 30
+
+# Optional: CloudTrail for audit logging
+enable_cloudtrail = true
+cloudtrail_s3_prefix = "cloudtrail-logs/"
+```

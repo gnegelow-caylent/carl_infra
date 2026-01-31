@@ -1,0 +1,28 @@
+{
+  "requirement": "a three tier web app",
+  "option_text": "OPTION 1: ECS Fargate with RDS Multi-AZ\nRECOMMENDED for most use cases\nBest for: Modern applications, teams wanting minimal server management, variable traffic\nCost: $350-700/month (depending on scale)\n\nKey components and architecture:\n- VPC: Three-tier design (Public/App/Data subnets) across 2 Availability Zones with /20 CIDR\n- Presentation Tier: Application Load Balancer in public subnets\n- Application Tier: ECS Fargate containers (0.5-1 vCPU, 1-2GB RAM) in private app subnets, auto-scaling 2-10 tasks\n- Data Tier: RDS Multi-AZ (db.t3.small PostgreSQL/MySQL) in isolated data subnets with automated backups\n- Networking: NAT Gateways in each AZ ($65/mo), S3/DynamoDB Gateway Endpoints (free), VPC Flow Logs to S3\n\nSOC 2 compliance ready:\n- Multi-AZ provides high availability (A1.1, A1.2)\n- Encryption at rest with KMS for RDS and EFS\n- Private subnets with security group isolation (CC6.6)\n- IAM task roles with least privilege (CC6.1)\n- Flow logs for network monitoring (CC7.2)\n- Automated backups with 30-day retention\n\nCost breakdown:\n- Fargate: $30-90/mo (2-6 tasks running constantly at 0.5vCPU/1GB)\n- RDS Multi-AZ db.t3.small: $70/mo\n- ALB: $23/mo + $0.008 per LCU\n- NAT Gateways: $65/mo (2 AZs)\n- Data transfer: $45/mo (500GB)\n- VPC Flow Logs: $40-80/mo\n\nTradeoffs:\n- Higher per-compute-hour cost than EC2 but you pay only for actual usage\n- No server patching or OS management required\n- Container experience helpful but not required\n- Cold start can add 30-60 seconds for scale-up",
+  "vpc_id": null,
+  "vpc_cidr": "10.21.0.0/16",
+  "prefix": "test",
+  "environment": "dev",
+  "use_transit_gateway": false,
+  "generated_at": "2026-01-31T01:19:23.719829",
+  "generated_by": "CARL AI-driven infrastructure builder",
+  "soc2_controls": [
+    "CC",
+    "A",
+    "PI"
+  ],
+  "security_practices": [
+    "Encryption at rest (KMS)",
+    "VPC Flow Logs enabled",
+    "CloudWatch monitoring",
+    "CloudTrail logging",
+    "Automated backups configured",
+    "Multi-AZ deployment",
+    "Security groups with least privilege",
+    "KMS encryption",
+    "Versioning enabled",
+    "AWS WAF protection"
+  ]
+}
