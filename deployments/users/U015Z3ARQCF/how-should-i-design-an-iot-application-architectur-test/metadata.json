@@ -1,0 +1,22 @@
+{
+  "requirement": "How should I design an IoT application architecture?",
+  "option_text": "OPTION 1: Event-Driven Serverless IoT (Simple)\nRECOMMENDED for getting started\nBest for: Small to medium IoT deployments (up to 10,000 devices) with straightforward data flows\nCost: $50-300/month (depending on device count and message volume)\n\nKey points:\n- AWS IoT Core receives device messages over MQTT/HTTPS and handles authentication via device certificates\n- IoT Rules Engine routes messages directly to Lambda functions for processing (no streaming layer needed)\n- Lambda processes telemetry data, applies business logic, and writes to DynamoDB for current state\n- DynamoDB stores device state and metadata with on-demand billing (pay per request)\n- S3 stores historical data with lifecycle policies to move to Glacier after 90 days\n- CloudWatch monitors Lambda errors and IoT metrics\n- No VPC needed initially, but you can add VPC for Lambda if connecting to on-premises systems\n- Compliance: Meets SOC 2 CC6.1, CC6.6, CC6.7 with encryption at rest/transit and CloudWatch Logs encrypted\n- Your environment needs: Enable CloudTrail for audit logging and GuardDuty for threat detection\n\nTradeoffs: Simple architecture but less suited for high-throughput real-time analytics or complex event processing across multiple devices",
+  "vpc_id": null,
+  "vpc_cidr": "10.1.0.0/16",
+  "prefix": "test",
+  "environment": "dev",
+  "use_transit_gateway": false,
+  "generated_at": "2026-01-31T14:52:14.124943",
+  "generated_by": "CARL AI-driven infrastructure builder",
+  "soc2_controls": [
+    "CC",
+    "A",
+    "PI"
+  ],
+  "security_practices": [
+    "CloudWatch monitoring",
+    "CloudTrail logging",
+    "VPC endpoints for private access",
+    "Versioning enabled"
+  ]
+}
