@@ -1,0 +1,102 @@
+```hcl
+# AWS Region
+aws_region = "us-east-1"
+
+# Resource naming prefix
+resource_prefix = "test"
+
+# Environment tag
+environment = "dev"
+
+# VPC Configuration
+vpc_cidr = "10.2.0.0/16"
+
+# Availability Zones (must be in selected region)
+availability_zones = ["us-east-1a", "us-east-1b"]
+
+# Public Subnet CIDRs (1 per AZ for ALB)
+public_subnet_cidrs = ["10.2.1.0/24", "10.2.2.0/24"]
+
+# Application Subnet CIDRs (1 per AZ for ASG instances)
+app_subnet_cidrs = ["10.2.11.0/24", "10.2.12.0/24"]
+
+# Data Subnet CIDRs (1 per AZ for RDS)
+data_subnet_cidrs = ["10.2.21.0/24", "10.2.22.0/24"]
+
+# Auto Scaling Group Configuration
+asg_min_size     = 2
+asg_max_size     = 4
+asg_desired_size = 2
+
+# EC2 Instance Configuration
+instance_type = "t3.medium"
+
+# AMI - Ubuntu 22.04 LTS (replace with your region's AMI ID)
+ami_id = "ami-0c55b159cbfafe1f0"
+
+# EC2 Key Pair name for SSH access
+key_pair_name = "test-web-app-key"
+
+# RDS Configuration
+rds_engine_version       = "15.3"
+rds_instance_class       = "db.t3.micro"
+rds_allocated_storage    = 20
+rds_max_allocated_storage = 100
+rds_database_name        = "appdb"
+rds_username             = "admin"
+# IMPORTANT: Change this to a strong password in production
+rds_password = "ChangeMe123!@#"
+
+# Application Load Balancer Configuration
+alb_enable_deletion_protection = false
+alb_enable_http2               = true
+alb_enable_cross_zone_load_balancing = true
+
+# Health Check Configuration
+health_check_enabled            = true
+health_check_healthy_threshold   = 2
+health_check_unhealthy_threshold = 3
+health_check_timeout             = 5
+health_check_interval            = 30
+health_check_matcher             = "200"
+health_check_path                = "/"
+
+# VPC Flow Logs Configuration
+enable_vpc_flow_logs = true
+flow_logs_retention_days = 7
+
+# NAT Gateway Configuration (1 per AZ)
+enable_nat_gateways = true
+
+# Enable VPC endpoints for private access to AWS services
+enable_s3_endpoint = true
+enable_dynamodb_endpoint = false
+
+# Tags applied to all resources
+common_tags = {
+  Project     = "web-app"
+  ManagedBy   = "Terraform"
+  CostCenter  = "Engineering"
+}
+
+# Transit Gateway (disabled per configuration)
+enable_transit_gateway = false
+
+# CloudWatch Alarms
+enable_cloudwatch_alarms = true
+alarm_email_endpoint     = "ops-team@example.com"
+
+# Backup Configuration
+enable_rds_backup = true
+backup_retention_period = 7
+
+# SSL/TLS Certificate ARN (replace with your ACM certificate)
+# Leave empty to use HTTP only (not recommended for production)
+ssl_certificate_arn = ""
+
+# Application port
+app_port = 80
+
+# Application health check port
+app_health_check_port = 80
+```
