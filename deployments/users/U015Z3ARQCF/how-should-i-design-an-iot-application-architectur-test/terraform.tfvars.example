@@ -1,0 +1,72 @@
+```hcl
+# AWS Region for resource deployment
+aws_region = "us-east-1"
+
+# Environment name for resource tagging and naming
+environment = "dev"
+
+# Prefix for all resource names to ensure uniqueness
+resource_prefix = "test"
+
+# VPC CIDR block for the network
+vpc_cidr = "10.1.0.0/16"
+
+# Enable VPC for Lambda functions (set to true if connecting to on-premises systems)
+enable_vpc_for_lambda = false
+
+# Enable Transit Gateway integration (set to true for multi-account/hybrid connectivity)
+enable_transit_gateway = false
+
+# Transit Gateway ID (required only if enable_transit_gateway is true)
+transit_gateway_id = ""
+
+# Maximum number of IoT devices expected in deployment
+max_iot_devices = 10000
+
+# IoT Core message throughput in messages per second
+iot_message_throughput_mps = 1000
+
+# DynamoDB on-demand billing mode (true for variable workloads, false for provisioned capacity)
+dynamodb_on_demand = true
+
+# S3 lifecycle transition days - move objects to Glacier after this many days
+s3_lifecycle_transition_days = 90
+
+# S3 lifecycle expiration days - delete objects after this many days (0 = never delete)
+s3_lifecycle_expiration_days = 0
+
+# Enable CloudTrail for audit logging (required for SOC 2 compliance)
+enable_cloudtrail = true
+
+# Enable GuardDuty for threat detection (required for SOC 2 compliance)
+enable_guardduty = true
+
+# Enable CloudWatch Logs encryption (required for SOC 2 CC6.1 compliance)
+enable_cloudwatch_logs_encryption = true
+
+# Enable S3 encryption at rest (required for SOC 2 CC6.1 compliance)
+enable_s3_encryption = true
+
+# Enable DynamoDB encryption at rest (required for SOC 2 CC6.1 compliance)
+enable_dynamodb_encryption = true
+
+# Lambda function timeout in seconds
+lambda_timeout_seconds = 60
+
+# Lambda function memory allocation in MB
+lambda_memory_mb = 256
+
+# CloudWatch Logs retention period in days
+cloudwatch_logs_retention_days = 30
+
+# Enable VPC Flow Logs for network monitoring
+enable_vpc_flow_logs = true
+
+# Tags to apply to all resources
+common_tags = {
+  Project     = "IoT-Application"
+  ManagedBy   = "Terraform"
+  Compliance  = "SOC2"
+  CostCenter  = "Engineering"
+}
+```
