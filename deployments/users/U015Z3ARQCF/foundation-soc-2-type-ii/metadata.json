@@ -4,34 +4,25 @@
     "primary": "region_us-east-1",
     "multi": "region_single",
     "account_name": "dev",
-    "vpc_count": "2",
+    "vpc_count": 1,
     "vpcs": [
       {
         "cidr": "10.1.0.0/16",
-        "name": "dev-app",
-        "environment": "development"
-      },
-      {
-        "cidr": "10.1.0.0/16",
-        "name": "dev-db",
+        "name": "dev",
         "environment": "development"
       }
     ],
     "vpc_config_index": 0
   },
-  "estimated_cost": "$516.20/month",
+  "estimated_cost": "$932.40/month",
   "framework": "SOC 2 Type II",
   "vpcs": [
     {
       "cidr": "10.1.0.0/16",
-      "name": "dev-app",
-      "environment": "development"
-    },
-    {
-      "cidr": "10.1.0.0/16",
-      "name": "dev-db",
+      "name": "dev",
       "environment": "development"
     }
   ],
-  "generated_at": "2026-02-01T21:20:20.780721"
+  "generated_at": "2026-02-01T22:39:13.214834",
+  "modules_generated": 1
 }
