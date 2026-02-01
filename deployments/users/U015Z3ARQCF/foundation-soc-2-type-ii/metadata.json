@@ -1,0 +1,37 @@
+{
+  "description": "Foundation infrastructure for SOC 2 Type II compliance",
+  "requirements": {
+    "primary": "region_us-east-1",
+    "multi": "region_single",
+    "account_name": "dev",
+    "vpc_count": "2",
+    "vpcs": [
+      {
+        "cidr": "10.1.0.0/16",
+        "name": "dev-app",
+        "environment": "development"
+      },
+      {
+        "cidr": "10.1.0.0/16",
+        "name": "dev-db",
+        "environment": "development"
+      }
+    ],
+    "vpc_config_index": 0
+  },
+  "estimated_cost": "$516.20/month",
+  "framework": "SOC 2 Type II",
+  "vpcs": [
+    {
+      "cidr": "10.1.0.0/16",
+      "name": "dev-app",
+      "environment": "development"
+    },
+    {
+      "cidr": "10.1.0.0/16",
+      "name": "dev-db",
+      "environment": "development"
+    }
+  ],
+  "generated_at": "2026-02-01T21:20:20.780721"
+}
