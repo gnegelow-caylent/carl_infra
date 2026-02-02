@@ -1,6 +1,6 @@
 # AWS Config Rules for SOC 2 Type II Compliance
-# This module implements AWS Config Rules to monitor and enforce SOC 2 compliance controls
-# Includes CloudTrail, GuardDuty, S3, encryption, IAM, and network monitoring rules
+# This module implements AWS Config Rules to ensure continuous compliance monitoring
+# across CloudTrail, GuardDuty, S3, EBS, RDS, VPC Flow Logs, and IAM controls
 
 terraform {
   required_version = ">= 1.5"
@@ -49,13 +49,13 @@ variable "config_bucket_name" {
 }
 
 variable "config_bucket_key_prefix" {
-  description = "S3 bucket prefix for AWS Config snapshots"
+  description = "S3 key prefix for Config snapshots"
   type        = string
-  default     = "config/"
+  default     = "config-snapshots"
 }
 
 variable "log_retention_days" {
-  description = "CloudWatch Logs retention period in days (SOC 2 requires 7 years)"
+  description = "CloudWatch Logs retention in days (SOC 2 requires 7 years minimum)"
   type        = number
   default     = 2555
 }
@@ -67,25 +67,25 @@ variable "iam_password_policy_min_length" {
 }
 
 variable "iam_password_policy_require_symbols" {
-  description = "Require symbols in IAM password policy"
+  description = "Require symbols in IAM passwords"
   type        = bool
   default     = true
 }
 
 variable "iam_password_policy_require_numbers" {
-  description = "Require numbers in IAM password policy"
+  description = "Require numbers in IAM passwords"
   type        = bool
   default     = true
 }
 
 variable "iam_password_policy_require_uppercase" {
-  description = "Require uppercase in IAM password policy"
+  description = "Require uppercase in IAM passwords"
   type        = bool
   default     = true
 }
 
 variable "iam_password_policy_require_lowercase" {
-  description = "Require lowercase in IAM password policy"
+  description = "Require lowercase in IAM passwords"
   type        = bool
   default     = true
 }
@@ -96,30 +96,20 @@ variable "access_key_max_age_days" {
   default     = 90
 }
 
-variable "tags" {
-  description = "Additional tags to apply to resources"
-  type        = map(string)
-  default     = {}
-}
-
 # Data source for current AWS account
 data "aws_caller_identity" "current" {}
 
 data "aws_partition" "current" {}
 
-# KMS key for AWS Config encryption
+# KMS Key for Config encryption
 resource "aws_kms_key" "config" {
-  description             = "KMS key for AWS Config encryption - SOC 2 CC6.7"
+  description             = "KMS key for AWS Config encryption"
   deletion_window_in_days = 10
   enable_key_rotation     = true
 
-  tags = merge(
-    var.tags,
-    {
-      Name        = "config-encryption-key"
-      Environment = var.environment
-    }
-  )
+  tags = {
+    Name = "config-encryption-key"
+  }
 }
 
 resource "aws_kms_alias" "config" {
@@ -127,17 +117,13 @@ resource "aws_kms_alias" "config" {
   target_key_id = aws_kms_key.config.key_id
 }
 
-# S3 bucket for AWS Config snapshots with encryption
+# S3 bucket for Config snapshots with encryption
 resource "aws_s3_bucket" "config" {
   bucket = var.config_bucket_name
 
-  tags = merge(
-    var.tags,
-    {
-      Name        = "config-bucket"
-      Environment = var.environment
-    }
-  )
+  tags = {
+    Name = "config-bucket"
+  }
 }
 
 resource "aws_s3_bucket_versioning" "config" {
@@ -206,7 +192,7 @@ resource "aws_s3_bucket_policy" "config" {
   })
 }
 
-# IAM role for AWS Config
+# IAM Role for AWS Config
 resource "aws_iam_role" "config" {
   name = "aws-config-role-${var.environment}"
 
@@ -223,13 +209,9 @@ resource "aws_iam_role" "config" {
     ]
   })
 
-  tags = merge(
-    var.tags,
-    {
-      Name        = "config-role"
-      Environment = var.environment
-    }
-  )
+  tags = {
+    Name = "config-role"
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "config_managed_policy" {
@@ -253,7 +235,7 @@ resource "aws_iam_role_policy" "config_s3" {
         ]
         Resource = [
           aws_s3_bucket.config.arn,
-          "${aws_s3_bucket.config.arn}/*"
+          "${aws_s3_bucket.config.arn}/${var.config_bucket_key_prefix}/*"
         ]
       },
       {
@@ -272,7 +254,7 @@ resource "aws_iam_role_policy" "config_s3" {
 resource "aws_config_configuration_recorder" "main" {
   name       = "config-recorder-${var.environment}"
   role_arn   = aws_iam_role.config.arn
-  depends_on = [aws_iam_role_policy_attachment.config_managed_policy]
+  depends_on = [aws_iam_role_policy.config_s3]
 
   recording_group {
     all_supported = true
@@ -285,7 +267,6 @@ resource "aws_config_configuration_recorder_status" "main" {
   is_enabled        = true
   depends_on        = [aws_s3_bucket_policy.config]
   start_recording   = true
-  depends_on_list   = [aws_s3_bucket_policy.config]
 }
 
 # AWS Config Delivery Channel
@@ -304,19 +285,14 @@ resource "aws_config_delivery_channel" "main" {
 resource "aws_cloudwatch_log_group" "config" {
   name              = "/aws/config/${var.environment}"
   retention_in_days = var.log_retention_days
+  kms_key_id        = aws_kms_key.config.arn
 
-  kms_key_id = aws_kms_key.config.arn
-
-  tags = merge(
-    var.tags,
-    {
-      Name        = "config-logs"
-      Environment = var.environment
-    }
-  )
+  tags = {
+    Name = "config-logs"
+  }
 }
 
-# Config Rule: CloudTrail Enabled (CC7.2)
+# Config Rules - CloudTrail Enabled (CC7.2)
 resource "aws_config_config_rule" "cloudtrail_enabled" {
   name = "cloudtrail-enabled"
 
@@ -327,15 +303,12 @@ resource "aws_config_config_rule" "cloudtrail_enabled" {
 
   depends_on = [aws_config_configuration_recorder_status.main]
 
-  tags = merge(
-    var.tags,
-    {
-      Control = "CC7.2"
-    }
-  )
+  tags = {
+    Control = "CC7.2"
+  }
 }
 
-# Config Rule: GuardDuty Enabled (CC7.1)
+# Config Rules - GuardDuty Enabled Centralized (CC7.1)
 resource "aws_config_config_rule" "guardduty_enabled" {
   name = "guardduty-enabled-centralized"
 
@@ -346,15 +319,12 @@ resource "aws_config_config_rule" "guardduty_enabled" {
 
   depends_on = [aws_config_configuration_recorder_status.main]
 
-  tags = merge(
-    var.tags,
-    {
-      Control = "CC7.1"
-    }
-  )
+  tags = {
+    Control = "CC7.1"
+  }
 }
 
-# Config Rule: S3 Bucket Public Read Prohibited (CC6.7)
+# Config Rules - S3 Bucket Public Read Prohibited (CC6.7)
 resource "aws_config_config_rule" "s3_public_read_prohibited" {
   name = "s3-bucket-public-read-prohibited"
 
@@ -365,15 +335,12 @@ resource "aws_config_config_rule" "s3_public_read_prohibited" {
 
   depends_on = [aws_config_configuration_recorder_status.main]
 
-  tags = merge(
-    var.tags,
-    {
-      Control = "CC6.7"
-    }
-  )
+  tags = {
+    Control = "CC6.7"
+  }
 }
 
-# Config Rule: S3 Bucket Public Write Prohibited (CC6.7)
+# Config Rules - S3 Bucket Public Write Prohibited (CC6.7)
 resource "aws_config_config_rule" "s3_public_write_prohibited" {
   name = "s3-bucket-public-write-prohibited"
 
@@ -384,15 +351,12 @@ resource "aws_config_config_rule" "s3_public_write_prohibited" {
 
   depends_on = [aws_config_configuration_recorder_status.main]
 
-  tags = merge(
-    var.tags,
-    {
-      Control = "CC6.7"
-    }
-  )
+  tags = {
+    Control = "CC6.7"
+  }
 }
 
-# Config Rule: S3 Bucket SSL Requests Only (CC6.7)
+# Config Rules - S3 Bucket SSL Requests Only (CC6.7)
 resource "aws_config_config_rule" "s3_ssl_requests_only" {
   name = "s3-bucket-ssl-requests-only"
 
@@ -403,15 +367,12 @@ resource "aws_config_config_rule" "s3_ssl_requests_only" {
 
   depends_on = [aws_config_configuration_recorder_status.main]
 
-  tags = merge(
-    var.tags,
-    {
-      Control = "CC6.7"
-    }
-  )
+  tags = {
+    Control = "CC6.7"
+  }
 }
 
-# Config Rule: S3 Bucket Server-Side Encryption Enabled (CC6.7)
+# Config Rules - S3 Bucket Server-Side Encryption Enabled (CC6.7)
 resource "aws_config_config_rule" "s3_encryption_enabled" {
   name = "s3-bucket-server-side-encryption-enabled"
 
@@ -422,15 +383,12 @@ resource "aws_config_config_rule" "s3_encryption_enabled" {
 
   depends_on = [aws_config_configuration_recorder_status.main]
 
-  tags = merge(
-    var.tags,
-    {
-      Control = "CC6.7"
-    }
-  )
+  tags = {
+    Control = "CC6.7"
+  }
 }
 
-# Config Rule: Encrypted Volumes (CC6.7)
+# Config Rules - Encrypted Volumes (CC6.7)
 resource "aws_config_config_rule" "encrypted_volumes" {
   name = "encrypted-volumes"
 
@@ -439,21 +397,14 @@ resource "aws_config_config_rule" "encrypted_volumes" {
     source_identifier = "ENCRYPTED_VOLUMES"
   }
 
-  scope {
-    compliance_resource_types = ["AWS::EC2::Volume"]
-  }
-
   depends_on = [aws_config_configuration_recorder_status.main]
 
-  tags = merge(
-    var.tags,
-    {
-      Control = "CC6.7"
-    }
-  )
+  tags = {
+    Control = "CC6.7"
+  }
 }
 
-# Config Rule: RDS Storage Encrypted (CC6.7)
+# Config Rules - RDS Storage Encrypted (CC6.7)
 resource "aws_config_config_rule" "rds_storage_encrypted" {
   name = "rds-storage-encrypted"
 
@@ -462,21 +413,14 @@ resource "aws_config_config_rule" "rds_storage_encrypted" {
     source_identifier = "RDS_STORAGE_ENCRYPTED"
   }
 
-  scope {
-    compliance_resource_types = ["AWS::RDS::DBInstance"]
-  }
-
   depends_on = [aws_config_configuration_recorder_status.main]
 
-  tags = merge(
-    var.tags,
-    {
-      Control = "CC6.7"
-    }
-  )
+  tags = {
+    Control = "CC6.7"
+  }
 }
 
-# Config Rule: VPC Flow Logs Enabled (CC7.2)
+# Config Rules - VPC Flow Logs Enabled (CC7.2)
 resource "aws_config_config_rule" "vpc_flow_logs_enabled" {
   name = "vpc-flow-logs-enabled"
 
@@ -485,21 +429,14 @@ resource "aws_config_config_rule" "vpc_flow_logs_enabled" {
     source_identifier = "VPC_FLOW_LOGS_ENABLED"
   }
 
-  scope {
-    compliance_resource_types = ["AWS::EC2::VPC"]
-  }
-
   depends_on = [aws_config_configuration_recorder_status.main]
 
-  tags = merge(
-    var.tags,
-    {
-      Control = "CC7.2"
-    }
-  )
+  tags = {
+    Control = "CC7.2"
+  }
 }
 
-# Config Rule: IAM Password Policy (CC6.1)
+# Config Rules - IAM Password Policy (CC6.1)
 resource "aws_config_config_rule" "iam_password_policy" {
   name = "iam-password-policy"
 
@@ -520,15 +457,12 @@ resource "aws_config_config_rule" "iam_password_policy" {
 
   depends_on = [aws_config_configuration_recorder_status.main]
 
-  tags = merge(
-    var.tags,
-    {
-      Control = "CC6.1"
-    }
-  )
+  tags = {
+    Control = "CC6.1"
+  }
 }
 
-# Config Rule: IAM User MFA Enabled (CC6.1)
+# Config Rules - IAM User MFA Enabled (CC6.1)
 resource "aws_config_config_rule" "iam_user_mfa_enabled" {
   name = "iam-user-mfa-enabled"
 
@@ -537,4 +471,48 @@ resource "aws_config_config_rule" "iam_user_mfa_enabled" {
     source_identifier = "IAM_USER_MFA_ENABLED"
   }
 
-  depends_on = [aws
+  depends_on = [aws_config_configuration_recorder_status.main]
+
+  tags = {
+    Control = "CC6.1"
+  }
+}
+
+# Config Rules - Root Account MFA Enabled (CC6.1)
+resource "aws_config_config_rule" "root_account_mfa_enabled" {
+  name = "root-account-mfa-enabled"
+
+  source {
+    owner             = "AWS"
+    source_identifier = "ROOT_ACCOUNT_MFA_ENABLED"
+  }
+
+  depends_on = [aws_config_configuration_recorder_status.main]
+
+  tags = {
+    Control = "CC6.1"
+  }
+}
+
+# Config Rules - Access Keys Rotated (CC6.1)
+resource "aws_config_config_rule" "access_keys_rotated" {
+  name = "access-keys-rotated"
+
+  source {
+    owner             = "AWS"
+    source_identifier = "ACCESS_KEYS_ROTATED"
+  }
+
+  input_parameters = jsonencode({
+    maxAccessKeyAge = var.access_key_max_age_days
+  })
+
+  depends_on = [aws_config_configuration_recorder_status.main]
+
+  tags = {
+    Control = "CC6.1"
+  }
+}
+
+# Config Rules - CMK Backing Key Rotation Enabled (CC6.7)
+resource "aws_config_config_rule" "cmk_backing_key

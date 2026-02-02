@@ -1,6 +1,5 @@
-# AWS Account Factory for Terraform (AFT) Global Customizations
-# SOC 2 Type II Compliance Configuration
-# Implements IAM password policy, S3 block public access, and EBS encryption defaults
+# AWS AFT Global Customizations for SOC 2 Type II Compliance
+# This module implements IAM password policy, S3 block public access, and EBS encryption defaults
 
 terraform {
   required_version = ">= 1.5"
@@ -19,13 +18,12 @@ provider "aws" {
     tags = {
       ManagedBy  = "CARL"
       Compliance = "SOC2-TypeII"
-      CreatedBy  = "Terraform"
-      Environment = var.environment
+      CreatedAt  = timestamp()
     }
   }
 }
 
-# Variables
+# Variables for configuration
 variable "aws_region" {
   description = "AWS region for global customizations"
   type        = string
@@ -38,141 +36,219 @@ variable "environment" {
   default     = "production"
 }
 
-variable "password_policy_minimum_length" {
+variable "password_policy_enabled" {
+  description = "Enable IAM password policy"
+  type        = bool
+  default     = true
+}
+
+variable "s3_block_public_access_enabled" {
+  description = "Enable S3 block public access"
+  type        = bool
+  default     = true
+}
+
+variable "ebs_encryption_default_enabled" {
+  description = "Enable EBS encryption by default"
+  type        = bool
+  default     = true
+}
+
+variable "password_minimum_length" {
   description = "Minimum password length"
   type        = number
   default     = 14
 }
 
-variable "password_policy_require_symbols" {
-  description = "Require at least one symbol in password"
+variable "password_require_symbols" {
+  description = "Require symbols in password"
   type        = bool
   default     = true
 }
 
-variable "password_policy_require_numbers" {
-  description = "Require at least one number in password"
+variable "password_require_numbers" {
+  description = "Require numbers in password"
   type        = bool
   default     = true
 }
 
-variable "password_policy_require_uppercase" {
-  description = "Require at least one uppercase letter in password"
+variable "password_require_uppercase" {
+  description = "Require uppercase letters in password"
   type        = bool
   default     = true
 }
 
-variable "password_policy_require_lowercase" {
-  description = "Require at least one lowercase letter in password"
+variable "password_require_lowercase" {
+  description = "Require lowercase letters in password"
   type        = bool
   default     = true
 }
 
-variable "password_policy_max_age" {
+variable "password_max_age_days" {
   description = "Maximum password age in days"
   type        = number
   default     = 90
 }
 
-variable "password_policy_reuse_prevention" {
+variable "password_reuse_prevention" {
   description = "Number of previous passwords to prevent reuse"
   type        = number
   default     = 24
 }
 
-variable "password_policy_expiration_warning" {
-  description = "Days before password expiration to warn user"
-  type        = number
-  default     = 14
+variable "ebs_encryption_kms_key_id" {
+  description = "KMS key ID for EBS encryption (optional)"
+  type        = string
+  default     = null
 }
 
-# IAM Password Policy - SOC 2 Control: AC-2 Account Management
+variable "tags" {
+  description = "Additional tags to apply to resources"
+  type        = map(string)
+  default     = {}
+}
+
+# Data source for current AWS account
+data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}
+
+# IAM Password Policy for SOC 2 compliance
+# Controls: AC-2 (Account Management), IA-5 (Authentication)
 resource "aws_iam_account_password_policy" "soc2_compliant" {
-  minimum_password_length        = var.password_policy_minimum_length
-  require_lowercase_characters   = var.password_policy_require_lowercase
-  require_numbers                = var.password_policy_require_numbers
-  require_uppercase_characters   = var.password_policy_require_uppercase
-  require_symbols                = var.password_policy_require_symbols
+  count = var.password_policy_enabled ? 1 : 0
+
+  minimum_password_length        = var.password_minimum_length
+  require_lowercase_characters   = var.password_require_lowercase
+  require_numbers                = var.password_require_numbers
+  require_uppercase_characters   = var.password_require_uppercase
+  require_symbols                = var.password_require_symbols
   allow_users_to_change_password = true
   expire_passwords               = true
-  max_password_age               = var.password_policy_max_age
-  password_reuse_prevention      = var.password_policy_reuse_prevention
+  max_password_age               = var.password_max_age_days
+  password_reuse_prevention      = var.password_reuse_prevention
   hard_expiry                    = false
 
-  depends_on = [aws_iam_role.aft_global_customization_role]
+  lifecycle {
+    ignore_changes = [hard_expiry]
+  }
 }
 
-# S3 Block Public Access - SOC 2 Control: AC-3 Access Enforcement
-resource "aws_s3_account_public_access_block" "global" {
+# S3 Block Public Access for Account
+# Controls: AC-3 (Access Control), AC-6 (Least Privilege)
+resource "aws_s3_account_public_access_block" "soc2_compliant" {
+  count = var.s3_block_public_access_enabled ? 1 : 0
+
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
 
-# EBS Encryption Default - SOC 2 Control: SC-7 Boundary Protection
-resource "aws_ec2_ebs_encryption_by_default" "global" {
+# EBS Encryption by Default
+# Controls: SC-7 (Boundary Protection), SC-28 (Protection of Information at Rest)
+resource "aws_ec2_ebs_encryption_by_default" "soc2_compliant" {
+  count = var.ebs_encryption_default_enabled ? 1 : 0
+
   enabled = true
 }
 
-# KMS Key for EBS Encryption - SOC 2 Control: SC-13 Cryptographic Protection
+# KMS Key for EBS Encryption (if not using AWS managed key)
 resource "aws_kms_key" "ebs_encryption" {
-  description             = "KMS key for EBS encryption in AFT global customization"
+  description             = "KMS key for EBS encryption - SOC 2 compliance"
   deletion_window_in_days = 30
   enable_key_rotation     = true
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "Enable IAM policies"
-        Effect = "Allow"
-        Principal = {
-          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
-        }
-        Action   = "kms:*"
-        Resource = "*"
-      },
-      {
-        Sid    = "Allow EBS service"
-        Effect = "Allow"
-        Principal = {
-          Service = "ec2.amazonaws.com"
-        }
-        Action = [
-          "kms:Decrypt",
-          "kms:GenerateDataKey",
-          "kms:CreateGrant",
-          "kms:DescribeKey"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
+  policy                  = data.aws_iam_policy_document.ebs_kms_policy.json
 
-  tags = {
-    Name = "aft-ebs-encryption-key"
-  }
+  tags = merge(
+    var.tags,
+    {
+      Name        = "ebs-encryption-key"
+      Environment = var.environment
+    }
+  )
 }
 
+# KMS Key Alias for EBS Encryption
 resource "aws_kms_alias" "ebs_encryption" {
-  name          = "alias/aft-ebs-encryption"
+  name          = "alias/ebs-encryption-${var.environment}"
   target_key_id = aws_kms_key.ebs_encryption.key_id
 }
 
-# Set default EBS encryption key
-resource "aws_ec2_ebs_default_kms_key" "global" {
-  kms_key_id = aws_kms_key.ebs_encryption.arn
-}
+# KMS Key Policy for EBS Encryption
+data "aws_iam_policy_document" "ebs_kms_policy" {
+  statement {
+    sid    = "Enable IAM User Permissions"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+    actions   = ["kms:*"]
+    resources = ["*"]
+  }
 
-# CloudTrail for audit logging - SOC 2 Control: AU-2 Audit Events
-resource "aws_s3_bucket" "cloudtrail_logs" {
-  bucket = "aft-cloudtrail-logs-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+  statement {
+    sid    = "Allow EBS Service"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+      "kms:CreateGrant",
+      "kms:DescribeKey"
+    ]
+    resources = ["*"]
+  }
 
-  tags = {
-    Name = "aft-cloudtrail-logs"
+  statement {
+    sid    = "Allow CloudWatch Logs"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["logs.amazonaws.com"]
+    }
+    actions = [
+      "kms:Encrypt",
+      "kms:Decrypt",
+      "kms:ReEncrypt*",
+      "kms:GenerateDataKey*",
+      "kms:CreateGrant",
+      "kms:DescribeKey"
+    ]
+    resources = ["*"]
   }
 }
 
+# Set default EBS encryption key
+resource "aws_ec2_default_ebs_encryption" "soc2_compliant" {
+  count = var.ebs_encryption_default_enabled ? 1 : 0
+
+  enabled           = true
+  kms_key_id        = aws_kms_key.ebs_encryption.arn
+  default_kms_key_id = aws_kms_key.ebs_encryption.id
+
+  depends_on = [aws_ec2_ebs_encryption_by_default.soc2_compliant]
+}
+
+# CloudTrail for audit logging (SOC 2 requirement)
+# Controls: AU-2 (Audit Events), AU-12 (Audit Generation)
+resource "aws_s3_bucket" "cloudtrail_logs" {
+  bucket = "cloudtrail-logs-${data.aws_caller_identity.current.account_id}-${data.aws_region.current.name}"
+
+  tags = merge(
+    var.tags,
+    {
+      Name        = "cloudtrail-logs"
+      Environment = var.environment
+    }
+  )
+}
+
+# Enable versioning on CloudTrail bucket
 resource "aws_s3_bucket_versioning" "cloudtrail_logs" {
   bucket = aws_s3_bucket.cloudtrail_logs.id
 
@@ -181,6 +257,7 @@ resource "aws_s3_bucket_versioning" "cloudtrail_logs" {
   }
 }
 
+# Enable encryption on CloudTrail bucket
 resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail_logs" {
   bucket = aws_s3_bucket.cloudtrail_logs.id
 
@@ -193,6 +270,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail_logs" 
   }
 }
 
+# Block public access to CloudTrail bucket
 resource "aws_s3_bucket_public_access_block" "cloudtrail_logs" {
   bucket = aws_s3_bucket.cloudtrail_logs.id
 
@@ -202,6 +280,7 @@ resource "aws_s3_bucket_public_access_block" "cloudtrail_logs" {
   restrict_public_buckets = true
 }
 
+# Lifecycle policy for CloudTrail logs (7-year retention for SOC 2)
 resource "aws_s3_bucket_lifecycle_configuration" "cloudtrail_logs" {
   bucket = aws_s3_bucket.cloudtrail_logs.id
 
@@ -214,112 +293,98 @@ resource "aws_s3_bucket_lifecycle_configuration" "cloudtrail_logs" {
       storage_class = "GLACIER"
     }
 
-    transition {
-      days          = 2555
-      storage_class = "DEEP_ARCHIVE"
-    }
-
     expiration {
-      days = 2555
+      days = 2555  # 7 years
+    }
+  }
+}
+
+# KMS key for CloudTrail encryption
+resource "aws_kms_key" "cloudtrail_encryption" {
+  description             = "KMS key for CloudTrail encryption - SOC 2 compliance"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  policy                  = data.aws_iam_policy_document.cloudtrail_kms_policy.json
+
+  tags = merge(
+    var.tags,
+    {
+      Name        = "cloudtrail-encryption-key"
+      Environment = var.environment
+    }
+  )
+}
+
+# KMS Key Alias for CloudTrail
+resource "aws_kms_alias" "cloudtrail_encryption" {
+  name          = "alias/cloudtrail-encryption-${var.environment}"
+  target_key_id = aws_kms_key.cloudtrail_encryption.key_id
+}
+
+# KMS Key Policy for CloudTrail
+data "aws_iam_policy_document" "cloudtrail_kms_policy" {
+  statement {
+    sid    = "Enable IAM User Permissions"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+    actions   = ["kms:*"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "Allow CloudTrail to encrypt logs"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["cloudtrail.amazonaws.com"]
+    }
+    actions = [
+      "kms:GenerateDataKey",
+      "kms:DecryptDataKey"
+    ]
+    resources = ["*"]
+  }
+}
+
+# S3 bucket policy for CloudTrail
+data "aws_iam_policy_document" "cloudtrail_bucket_policy" {
+  statement {
+    sid    = "AWSCloudTrailAclCheck"
+    effect = "Allow"
+    principals {
+      service = "cloudtrail.amazonaws.com"
+    }
+    actions   = ["s3:GetBucketAcl"]
+    resources = [aws_s3_bucket.cloudtrail_logs.arn]
+  }
+
+  statement {
+    sid    = "AWSCloudTrailWrite"
+    effect = "Allow"
+    principals {
+      service = "cloudtrail.amazonaws.com"
+    }
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.cloudtrail_logs.arn}/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "s3:x-amz-acl"
+      values   = ["bucket-owner-full-control"]
     }
   }
 }
 
 resource "aws_s3_bucket_policy" "cloudtrail_logs" {
   bucket = aws_s3_bucket.cloudtrail_logs.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "AWSCloudTrailAclCheck"
-        Effect = "Allow"
-        Principal = {
-          Service = "cloudtrail.amazonaws.com"
-        }
-        Action   = "s3:GetBucketAcl"
-        Resource = aws_s3_bucket.cloudtrail_logs.arn
-      },
-      {
-        Sid    = "AWSCloudTrailWrite"
-        Effect = "Allow"
-        Principal = {
-          Service = "cloudtrail.amazonaws.com"
-        }
-        Action   = "s3:PutObject"
-        Resource = "${aws_s3_bucket.cloudtrail_logs.arn}/*"
-        Condition = {
-          StringEquals = {
-            "s3:x-amz-acl" = "bucket-owner-full-control"
-          }
-        }
-      },
-      {
-        Sid    = "DenyUnencryptedObjectUploads"
-        Effect = "Deny"
-        Principal = "*"
-        Action   = "s3:PutObject"
-        Resource = "${aws_s3_bucket.cloudtrail_logs.arn}/*"
-        Condition = {
-          StringNotEquals = {
-            "s3:x-amz-server-side-encryption" = "aws:kms"
-          }
-        }
-      }
-    ]
-  })
+  policy = data.aws_iam_policy_document.cloudtrail_bucket_policy.json
 }
 
-# KMS Key for CloudTrail encryption
-resource "aws_kms_key" "cloudtrail_encryption" {
-  description             = "KMS key for CloudTrail log encryption"
-  deletion_window_in_days = 30
-  enable_key_rotation     = true
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "Enable IAM policies"
-        Effect = "Allow"
-        Principal = {
-          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
-        }
-        Action   = "kms:*"
-        Resource = "*"
-      },
-      {
-        Sid    = "Allow CloudTrail to encrypt logs"
-        Effect = "Allow"
-        Principal = {
-          Service = "cloudtrail.amazonaws.com"
-        }
-        Action = [
-          "kms:GenerateDataKey",
-          "kms:DecryptDataKey"
-        ]
-        Resource = "*"
-        Condition = {
-          StringLike = {
-            "kms:EncryptionContext:aws:cloudtrail:arn" = "arn:aws:cloudtrail:*:${data.aws_caller_identity.current.account_id}:trail/*"
-          }
-        }
-      }
-    ]
-  })
-
-  tags = {
-    Name = "aft-cloudtrail-encryption-key"
-  }
-}
-
-resource "aws_kms_alias" "cloudtrail_encryption" {
-  name          = "alias/aft-cloudtrail-encryption"
-  target_key_id = aws_kms_key.cloudtrail_encryption.key_id
-}
-
-# CloudTrail for global account activity
-resource "aws_cloudtrail" "global" {
-  name                          = "aft-global-trail"
+# CloudTrail for organization-wide logging
+resource "aws_cloudtrail" "organization" {
+  name                          = "organization-trail-${var.environment}"
   s3_bucket_name                = aws_s3_bucket.cloudtrail_logs.id
   include_global_service_events = true
   is_multi_region_trail         = true
@@ -333,7 +398,7 @@ resource "aws_cloudtrail" "global" {
 
     data_resource {
       type   = "AWS::S3::Object"
-      values = ["arn:aws:s3:::*/"]
+      values = ["arn:aws:s3:::*/*"]
     }
 
     data_resource {
@@ -342,123 +407,75 @@ resource "aws_cloudtrail" "global" {
     }
   }
 
-  tags = {
-    Name = "aft-global-trail"
-  }
+  tags = merge(
+    var.tags,
+    {
+      Name        = "organization-trail"
+      Environment = var.environment
+    }
+  )
 }
 
-# CloudWatch Log Group for CloudTrail - SOC 2 Control: AU-12 Audit Generation
+# CloudWatch Log Group for CloudTrail
 resource "aws_cloudwatch_log_group" "cloudtrail" {
-  name              = "/aws/cloudtrail/aft-global"
-  retention_in_days = 2555
+  name              = "/aws/cloudtrail/organization-${var.environment}"
+  retention_in_days = 2555  # 7 years for SOC 2
 
   kms_key_id = "${aws_kms_key.cloudwatch_logs.arn}:*"
 
-  tags = {
-    Name = "aft-cloudtrail-logs"
-  }
+  tags = merge(
+    var.tags,
+    {
+      Name        = "cloudtrail-logs"
+      Environment = var.environment
+    }
+  )
 }
 
-# KMS Key for CloudWatch Logs encryption
+# KMS key for CloudWatch Logs
 resource "aws_kms_key" "cloudwatch_logs" {
-  description             = "KMS key for CloudWatch Logs encryption"
+  description             = "KMS key for CloudWatch Logs encryption - SOC 2 compliance"
   deletion_window_in_days = 30
   enable_key_rotation     = true
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "Enable IAM policies"
-        Effect = "Allow"
-        Principal = {
-          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
-        }
-        Action   = "kms:*"
-        Resource = "*"
-      },
-      {
-        Sid    = "Allow CloudWatch Logs"
-        Effect = "Allow"
-        Principal = {
-          Service = "logs.${var.aws_region}.amazonaws.com"
-        }
-        Action = [
-          "kms:Encrypt",
-          "kms:Decrypt",
-          "kms:ReEncrypt*",
-          "kms:GenerateDataKey*",
-          "kms:CreateGrant",
-          "kms:DescribeKey"
-        ]
-        Resource = "*"
-        Condition = {
-          ArnLike = {
-            "kms:EncryptionContext:aws:logs:arn" = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*"
-          }
-        }
-      }
-    ]
-  })
+  policy                  = data.aws_iam_policy_document.cloudwatch_kms_policy.json
 
-  tags = {
-    Name = "aft-cloudwatch-logs-key"
-  }
+  tags = merge(
+    var.tags,
+    {
+      Name        = "cloudwatch-logs-encryption-key"
+      Environment = var.environment
+    }
+  )
 }
 
+# KMS Key Alias for CloudWatch Logs
 resource "aws_kms_alias" "cloudwatch_logs" {
-  name          = "alias/aft-cloudwatch-logs"
+  name          = "alias/cloudwatch-logs-${var.environment}"
   target_key_id = aws_kms_key.cloudwatch_logs.key_id
 }
 
-# IAM Role for CloudTrail to write to CloudWatch Logs
-resource "aws_iam_role" "cloudtrail_cloudwatch_logs" {
-  name = "aft-cloudtrail-cloudwatch-logs-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Service = "cloudtrail.amazonaws.com"
-        }
-        Action = "sts:AssumeRole"
-      }
-    ]
-  })
-
-  tags = {
-    Name = "aft-cloudtrail-cloudwatch-logs-role"
+# KMS Key Policy for CloudWatch Logs
+data "aws_iam_policy_document" "cloudwatch_kms_policy" {
+  statement {
+    sid    = "Enable IAM User Permissions"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+    actions   = ["kms:*"]
+    resources = ["*"]
   }
-}
 
-resource "aws_iam_role_policy" "cloudtrail_cloudwatch_logs" {
-  name = "aft-cloudtrail-cloudwatch-logs-policy"
-  role = aws_iam_role.cloudtrail_cloudwatch_logs.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
-        Resource = "${aws_cloudwatch_log_group.cloudtrail.arn}:*"
-      }
-    ]
-  })
-}
-
-# Update CloudTrail with CloudWatch Logs
-resource "aws_cloudtrail" "global_with_logs" {
-  name                          = "aft-global-trail"
-  s3_bucket_name                = aws_s3_bucket.cloudtrail_logs.id
-  include_global_service_events = true
-  is_multi_region_trail         = true
-  enable_log_file_validation    = true
-  kms_key_id                    = aws_kms_key.cloudtrail_encryption.arn
-  cloud_watch_logs_group_arn    = "${aws_cloudwatch_log_group.cloudtrail.arn}:*"
-  cloud_watch_logs_role_arn     = aws_iam_role.cloudtrail_cloudwatch_logs.arn
-  depends_on                    = [aws_s3_bucket_
+  statement {
+    sid    = "Allow CloudWatch Logs"
+    effect = "Allow"
+    principals {
+      service = "logs.${data.aws_region.current.name}.amazonaws.com"
+    }
+    actions = [
+      "kms:Encrypt",
+      "kms:Decrypt",
+      "kms:ReEncrypt*",
+      "kms:GenerateDataKey*",
+      "kms:Create

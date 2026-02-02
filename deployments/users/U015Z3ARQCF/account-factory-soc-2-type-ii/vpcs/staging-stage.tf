@@ -1,5 +1,5 @@
 # VPC Module for SOC 2 Type II Compliance
-# Provides secure, multi-AZ VPC with public/private subnets, NAT Gateway, VPC Flow Logs, and VPC Endpoints
+# Implements secure networking with encryption, logging, and monitoring
 
 terraform {
   required_version = ">= 1.5"
@@ -70,15 +70,9 @@ variable "enable_vpc_flow_logs" {
 }
 
 variable "enable_vpc_endpoints" {
-  description = "Enable VPC Endpoints for AWS services"
+  description = "Enable VPC endpoints for AWS services"
   type        = bool
   default     = true
-}
-
-variable "environment" {
-  description = "Environment name"
-  type        = string
-  default     = "staging"
 }
 
 variable "enable_dns_hostnames" {
@@ -89,6 +83,24 @@ variable "enable_dns_hostnames" {
 
 variable "enable_dns_support" {
   description = "Enable DNS support in VPC"
+  type        = bool
+  default     = true
+}
+
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "staging"
+}
+
+variable "private_subnets" {
+  description = "Create private subnets"
+  type        = bool
+  default     = true
+}
+
+variable "public_subnets" {
+  description = "Create public subnets"
   type        = bool
   default     = true
 }
@@ -104,9 +116,8 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
-# KMS Key for VPC Flow Logs encryption (SOC 2 encryption at rest requirement)
+# KMS Key for VPC Flow Logs encryption (SOC 2 encryption at rest)
 resource "aws_kms_key" "vpc_flow_logs" {
-  count                   = var.enable_vpc_flow_logs ? 1 : 0
   description             = "KMS key for VPC Flow Logs encryption"
   deletion_window_in_days = 10
   enable_key_rotation     = true
@@ -117,17 +128,16 @@ resource "aws_kms_key" "vpc_flow_logs" {
 }
 
 resource "aws_kms_alias" "vpc_flow_logs" {
-  count         = var.enable_vpc_flow_logs ? 1 : 0
   name          = "alias/${var.vpc_name}-flow-logs"
-  target_key_id = aws_kms_key.vpc_flow_logs[0].key_id
+  target_key_id = aws_kms_key.vpc_flow_logs.key_id
 }
 
-# CloudWatch Log Group for VPC Flow Logs
+# CloudWatch Log Group for VPC Flow Logs (SOC 2 CC7.2 - Logging)
 resource "aws_cloudwatch_log_group" "vpc_flow_logs" {
   count             = var.enable_vpc_flow_logs ? 1 : 0
   name              = "/aws/vpc/flowlogs/${var.vpc_name}"
   retention_in_days = var.log_retention_days
-  kms_key_id        = aws_kms_key.vpc_flow_logs[0].arn
+  kms_key_id        = aws_kms_key.vpc_flow_logs.arn
 
   tags = {
     Name = "${var.vpc_name}-flow-logs"
@@ -137,7 +147,7 @@ resource "aws_cloudwatch_log_group" "vpc_flow_logs" {
 # IAM Role for VPC Flow Logs
 resource "aws_iam_role" "vpc_flow_logs" {
   count = var.enable_vpc_flow_logs ? 1 : 0
-  name  = "${var.vpc_name}-flow-logs-role"
+  name  = "${var.vpc_name}-vpc-flow-logs-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -153,13 +163,14 @@ resource "aws_iam_role" "vpc_flow_logs" {
   })
 
   tags = {
-    Name = "${var.vpc_name}-flow-logs-role"
+    Name = "${var.vpc_name}-vpc-flow-logs-role"
   }
 }
 
+# IAM Policy for VPC Flow Logs
 resource "aws_iam_role_policy" "vpc_flow_logs" {
   count = var.enable_vpc_flow_logs ? 1 : 0
-  name  = "${var.vpc_name}-flow-logs-policy"
+  name  = "${var.vpc_name}-vpc-flow-logs-policy"
   role  = aws_iam_role.vpc_flow_logs[0].id
 
   policy = jsonencode({
@@ -191,7 +202,7 @@ resource "aws_vpc" "main" {
   }
 }
 
-# VPC Flow Logs (SOC 2 CC7.2 - Monitoring and Logging)
+# VPC Flow Logs (SOC 2 CC7.2 - Monitoring and logging)
 resource "aws_flow_log" "main" {
   count                   = var.enable_vpc_flow_logs ? 1 : 0
   iam_role_arn            = aws_iam_role.vpc_flow_logs[0].arn
@@ -199,7 +210,7 @@ resource "aws_flow_log" "main" {
   traffic_type            = "ALL"
   vpc_id                  = aws_vpc.main.id
   log_destination_type    = "cloud-watch-logs"
-  log_format              = "${aws_vpc.main.id} $${version} $${account-id} $${interface-id} $${srcaddr} $${dstaddr} $${srcport} $${dstport} $${protocol} $${packets} $${bytes} $${windowstart} $${windowend} $${action} $${tcpflags} $${type} $${pkt-srcaddr} $${pkt-dstaddr} $${region} $${vpc-id} $${flow-logs-id} $${traffic-type} $${subnet-id} $${instance-id} $${interface-type} $${eni-id} $${local-gateway-route-table-id} $${vpc-peering-connection-id} $${flow-direction} $${traffic-path} $${packet-aggregation-flags}"
+  log_format              = "${aws_vpc.main.id} $${version} $${account-id} $${interface-id} $${srcaddr} $${dstaddr} $${srcport} $${dstport} $${protocol} $${packets} $${bytes} $${windowstart} $${windowend} $${action} $${tcpflags} $${type} $${pkt-srcaddr} $${pkt-dstaddr} $${region} $${vpc-id} $${flow-logs-id} $${traffic-type} $${subnet-id} $${instance-id} $${interface-type} $${eni-id} $${local-gateway-route-table-id} $${vpc-peering-connection-id} $${flow-logs-status} $${traffic-direction} $${traffic-path} $${packet-aggregation-flags}"
   max_aggregation_interval = 60
 
   tags = {
@@ -220,39 +231,38 @@ resource "aws_internet_gateway" "main" {
 
 # Public Subnets
 resource "aws_subnet" "public" {
-  count                   = var.availability_zones
+  count                   = var.public_subnets ? var.availability_zones : 0
   vpc_id                  = aws_vpc.main.id
   cidr_block              = cidrsubnet(var.cidr_block, 4, count.index)
   availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = true
 
   tags = {
-    Name = "${var.vpc_name}-public-${count.index + 1}"
+    Name = "${var.vpc_name}-public-subnet-${count.index + 1}"
     Type = "Public"
   }
 }
 
 # Private Subnets
 resource "aws_subnet" "private" {
-  count              = var.availability_zones
-  vpc_id             = aws_vpc.main.id
-  cidr_block         = cidrsubnet(var.cidr_block, 4, count.index + var.availability_zones)
-  availability_zone  = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = false
+  count             = var.private_subnets ? var.availability_zones : 0
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.cidr_block, 4, count.index + var.availability_zones)
+  availability_zone = data.aws_availability_zones.available.names[count.index]
 
   tags = {
-    Name = "${var.vpc_name}-private-${count.index + 1}"
+    Name = "${var.vpc_name}-private-subnet-${count.index + 1}"
     Type = "Private"
   }
 }
 
 # Elastic IPs for NAT Gateways
 resource "aws_eip" "nat" {
-  count  = var.enable_nat_gateway ? var.availability_zones : 0
+  count  = var.enable_nat_gateway && var.private_subnets ? var.availability_zones : 0
   domain = "vpc"
 
   tags = {
-    Name = "${var.vpc_name}-nat-eip-${count.index + 1}"
+    Name = "${var.vpc_name}-eip-nat-${count.index + 1}"
   }
 
   depends_on = [aws_internet_gateway.main]
@@ -260,7 +270,7 @@ resource "aws_eip" "nat" {
 
 # NAT Gateways (one per AZ for HA)
 resource "aws_nat_gateway" "main" {
-  count         = var.enable_nat_gateway ? var.availability_zones : 0
+  count         = var.enable_nat_gateway && var.private_subnets ? var.availability_zones : 0
   allocation_id = aws_eip.nat[count.index].id
   subnet_id     = aws_subnet.public[count.index].id
 
@@ -287,22 +297,19 @@ resource "aws_route_table" "public" {
 
 # Public Route Table Associations
 resource "aws_route_table_association" "public" {
-  count          = var.availability_zones
+  count          = var.public_subnets ? var.availability_zones : 0
   subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public.id
 }
 
 # Private Route Tables (one per AZ for NAT Gateway routing)
 resource "aws_route_table" "private" {
-  count  = var.enable_nat_gateway ? var.availability_zones : 1
+  count  = var.private_subnets ? var.availability_zones : 0
   vpc_id = aws_vpc.main.id
 
-  dynamic "route" {
-    for_each = var.enable_nat_gateway ? [1] : []
-    content {
-      cidr_block     = "0.0.0.0/0"
-      nat_gateway_id = aws_nat_gateway.main[count.index].id
-    }
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = var.enable_nat_gateway ? aws_nat_gateway.main[count.index].id : null
   }
 
   tags = {
@@ -312,13 +319,14 @@ resource "aws_route_table" "private" {
 
 # Private Route Table Associations
 resource "aws_route_table_association" "private" {
-  count          = var.availability_zones
+  count          = var.private_subnets ? var.availability_zones : 0
   subnet_id      = aws_subnet.private[count.index].id
-  route_table_id = var.enable_nat_gateway ? aws_route_table.private[count.index].id : aws_route_table.private[0].id
+  route_table_id = aws_route_table.private[count.index].id
 }
 
-# Network ACL for Public Subnets (SOC 2 AC-3 Access Control)
+# Network ACL for Public Subnets (SOC 2 CC6.1 - Access control)
 resource "aws_network_acl" "public" {
+  count      = var.public_subnets ? 1 : 0
   vpc_id     = aws_vpc.main.id
   subnet_ids = aws_subnet.public[*].id
 
@@ -367,6 +375,7 @@ resource "aws_network_acl" "public" {
 
 # Network ACL for Private Subnets
 resource "aws_network_acl" "private" {
+  count      = var.private_subnets ? 1 : 0
   vpc_id     = aws_vpc.main.id
   subnet_ids = aws_subnet.private[*].id
 
@@ -406,14 +415,10 @@ resource "aws_network_acl" "private" {
 
 # VPC Endpoints for AWS Services (cost optimization and security)
 resource "aws_vpc_endpoint" "s3" {
-  count             = var.enable_vpc_endpoints ? 1 : 0
-  vpc_id            = aws_vpc.main.id
-  service_name      = "com.amazonaws.${data.aws_availability_zones.available.names[0] != "" ? split(".", data.aws_availability_zones.available.names[0])[0] : var.aws_region}.s3"
-  vpc_endpoint_type = "Gateway"
-  route_table_ids   = concat(
-    [aws_route_table.public.id],
-    var.enable_nat_gateway ? aws_route_table.private[*].id : []
-  )
+  count           = var.enable_vpc_endpoints ? 1 : 0
+  vpc_id          = aws_vpc.main.id
+  service_name    = "com.amazonaws.${data.aws_availability_zones.available.names[0] != "" ? split(".", data.aws_availability_zones.available.names[0])[0] : var.aws_region}.s3"
+  route_table_ids = concat(aws_route_table.public[*].id, aws_route_table.private[*].id)
 
   tags = {
     Name = "${var.vpc_name}-s3-endpoint"
@@ -421,19 +426,10 @@ resource "aws_vpc_endpoint" "s3" {
 }
 
 resource "aws_vpc_endpoint" "dynamodb" {
-  count             = var.enable_vpc_endpoints ? 1 : 0
-  vpc_id            = aws_vpc.main.id
-  service_name      = "com.amazonaws.${split(".", data.aws_availability_zones.available.names[0])[0]}.dynamodb"
-  vpc_endpoint_type = "Gateway"
-  route_table_ids   = concat(
-    [aws_route_table.public.id],
-    var.enable_nat_gateway ? aws_route_table.private[*].id : []
-  )
+  count           = var.enable_vpc_endpoints ? 1 : 0
+  vpc_id          = aws_vpc.main.id
+  service_name    = "com.amazonaws.${split(".", data.aws_availability_zones.available.names[0])[0]}.dynamodb"
+  route_table_ids = concat(aws_route_table.public[*].id, aws_route_table.private[*].id)
 
   tags = {
-    Name = "${var.vpc_name}-dynamodb-endpoint"
-  }
-}
-
-# Interface VPC Endpoints for common AWS services
-resource "aws_security_group" "vpc_endpoints" {
+    Name = "${var.vpc_name}-dynam

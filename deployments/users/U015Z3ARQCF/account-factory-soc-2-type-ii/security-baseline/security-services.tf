@@ -1,6 +1,6 @@
 # AWS Security Services Module - SOC 2 Type II Compliance
 # Implements GuardDuty, Security Hub, AWS Config, and Inspector
-# for comprehensive threat detection, configuration management, and vulnerability scanning
+# for comprehensive threat detection, compliance monitoring, and vulnerability management
 
 terraform {
   required_version = ">= 1.5"
@@ -39,31 +39,31 @@ variable "environment" {
 }
 
 variable "enable_guardduty" {
-  description = "Enable AWS GuardDuty for threat detection"
+  description = "Enable GuardDuty for threat detection"
   type        = bool
   default     = true
 }
 
 variable "enable_security_hub" {
-  description = "Enable AWS Security Hub for centralized security findings"
+  description = "Enable Security Hub for compliance monitoring"
   type        = bool
   default     = true
 }
 
 variable "enable_config" {
-  description = "Enable AWS Config for configuration recording and compliance"
+  description = "Enable AWS Config for configuration recording"
   type        = bool
   default     = true
 }
 
 variable "enable_inspector" {
-  description = "Enable Amazon Inspector for vulnerability scanning"
+  description = "Enable Inspector for vulnerability scanning"
   type        = bool
   default     = true
 }
 
 variable "enable_macie" {
-  description = "Enable Amazon Macie for S3 data classification"
+  description = "Enable Macie for data classification"
   type        = bool
   default     = false
 }
@@ -81,7 +81,7 @@ variable "security_hub_standards" {
 }
 
 variable "config_all_supported" {
-  description = "Enable AWS Config to record all supported resources"
+  description = "Record all supported AWS resources in Config"
   type        = bool
   default     = true
 }
@@ -93,15 +93,15 @@ variable "inspector_resource_types" {
 }
 
 variable "log_retention_days" {
-  description = "CloudWatch log retention in days (SOC 2 requires 7 years minimum for audit logs)"
+  description = "CloudWatch log retention in days (SOC 2 requires 7 years)"
   type        = number
   default     = 2555
 }
 
-variable "config_log_retention_days" {
-  description = "AWS Config log retention in days"
-  type        = number
-  default     = 2555
+variable "s3_log_bucket_prefix" {
+  description = "S3 bucket prefix for security logs"
+  type        = string
+  default     = "security-logs"
 }
 
 variable "tags" {
@@ -115,10 +115,10 @@ data "aws_caller_identity" "current" {}
 
 data "aws_region" "current" {}
 
-# KMS key for encrypting security service logs and data
+# KMS Key for encrypting security logs and findings
 resource "aws_kms_key" "security_services" {
-  description             = "KMS key for encrypting security services data - SOC 2 CC6.1"
-  deletion_window_in_days = 30
+  description             = "KMS key for security services encryption (SOC 2 CC6.1)"
+  deletion_window_in_days = 10
   enable_key_rotation     = true
 
   tags = merge(
@@ -134,7 +134,7 @@ resource "aws_kms_alias" "security_services" {
   target_key_id = aws_kms_key.security_services.key_id
 }
 
-# S3 bucket for security service logs with encryption and versioning
+# S3 bucket for security logs and findings
 resource "aws_s3_bucket" "security_logs" {
   bucket = "security-logs-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
 
@@ -187,10 +187,22 @@ resource "aws_s3_bucket_lifecycle_configuration" "security_logs" {
       storage_class = "GLACIER"
     }
 
+    transition {
+      days          = 365
+      storage_class = "DEEP_ARCHIVE"
+    }
+
     expiration {
       days = 2555
     }
   }
+}
+
+resource "aws_s3_bucket_logging" "security_logs" {
+  bucket = aws_s3_bucket.security_logs.id
+
+  target_bucket = aws_s3_bucket.security_logs.id
+  target_prefix = "access-logs/"
 }
 
 # CloudWatch Log Group for security services
@@ -207,10 +219,7 @@ resource "aws_cloudwatch_log_group" "security_services" {
   )
 }
 
-# ============================================================================
-# AWS GuardDuty - Threat Detection (SOC 2 CC7.1)
-# ============================================================================
-
+# GuardDuty Detector (SOC 2 CC7.1 - Threat Detection)
 resource "aws_guardduty_detector" "main" {
   count = var.enable_guardduty ? 1 : 0
 
@@ -232,6 +241,8 @@ resource "aws_guardduty_detector" "main" {
     }
   }
 
+  finding_publishing_frequency = "FIFTEEN_MINUTES"
+
   tags = merge(
     var.tags,
     {
@@ -240,66 +251,22 @@ resource "aws_guardduty_detector" "main" {
   )
 }
 
-# GuardDuty publishing destination for findings
-resource "aws_guardduty_publishing_destination" "main" {
+# GuardDuty ThreatIntelSet for custom threat intelligence
+resource "aws_guardduty_threatintelset" "main" {
   count = var.enable_guardduty ? 1 : 0
 
-  detector_id             = aws_guardduty_detector.main[0].id
-  destination_arn         = aws_s3_bucket.security_logs.arn
-  kms_key_arn             = aws_kms_key.security_services.arn
-  destination_type        = "S3"
-  enable                  = true
+  activate       = true
+  detector_id    = aws_guardduty_detector.main[0].id
+  format         = "TXT"
+  location       = "${aws_s3_bucket.security_logs.arn}/guardduty/threat-intel-set.txt"
+  name           = "custom-threat-intel"
 
-  depends_on = [aws_s3_bucket_policy.guardduty_logs]
+  depends_on = [aws_s3_bucket.security_logs]
 }
 
-# S3 bucket policy for GuardDuty
-resource "aws_s3_bucket_policy" "guardduty_logs" {
-  bucket = aws_s3_bucket.security_logs.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "AllowGuardDutyPutObject"
-        Effect = "Allow"
-        Principal = {
-          Service = "guardduty.amazonaws.com"
-        }
-        Action   = "s3:PutObject"
-        Resource = "${aws_s3_bucket.security_logs.arn}/*"
-        Condition = {
-          StringEquals = {
-            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
-          }
-        }
-      },
-      {
-        Sid    = "AllowGuardDutyGetBucketVersioning"
-        Effect = "Allow"
-        Principal = {
-          Service = "guardduty.amazonaws.com"
-        }
-        Action   = "s3:GetBucketVersioning"
-        Resource = aws_s3_bucket.security_logs.arn
-        Condition = {
-          StringEquals = {
-            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
-          }
-        }
-      }
-    ]
-  })
-}
-
-# ============================================================================
-# AWS Security Hub - Centralized Security Findings (SOC 2 CC7.2)
-# ============================================================================
-
+# Security Hub (SOC 2 CC7.2 - Compliance Monitoring)
 resource "aws_securityhub_account" "main" {
   count = var.enable_security_hub ? 1 : 0
-
-  enable_default_standards = false
 
   tags = merge(
     var.tags,
@@ -309,68 +276,46 @@ resource "aws_securityhub_account" "main" {
   )
 }
 
-# Enable CIS AWS Foundations standard
+# Enable CIS AWS Foundations Benchmark
 resource "aws_securityhub_standards_subscription" "cis_aws_foundations" {
   count = var.enable_security_hub && contains(var.security_hub_standards, "CIS AWS Foundations") ? 1 : 0
 
-  standards_arn = "arn:aws:securityhub:${data.aws_region.current.name}::standards/aws-foundational-security-best-practices/v/1.0.0"
-
   depends_on = [aws_securityhub_account.main]
+
+  standards_arn = "arn:aws:securityhub:${data.aws_region.current.name}::standards/aws-foundational-security-best-practices/v/1.0.0"
 }
 
-# Enable AWS Foundational Security Best Practices standard
+# Enable AWS Foundational Security Best Practices
 resource "aws_securityhub_standards_subscription" "aws_fsbp" {
   count = var.enable_security_hub && contains(var.security_hub_standards, "AWS Foundational Security Best Practices") ? 1 : 0
 
-  standards_arn = "arn:aws:securityhub:${data.aws_region.current.name}::standards/aws-foundational-security-best-practices/v/1.0.0"
-
   depends_on = [aws_securityhub_account.main]
+
+  standards_arn = "arn:aws:securityhub:${data.aws_region.current.name}::standards/aws-foundational-security-best-practices/v/1.0.0"
 }
 
-# Security Hub findings to CloudWatch Events for alerting
-resource "aws_cloudwatch_event_rule" "security_hub_findings" {
-  count = var.enable_security_hub ? 1 : 0
+# AWS Config (SOC 2 CC7.2 - Configuration Recording)
+resource "aws_config_configuration_aggregator" "main" {
+  count = var.enable_config ? 1 : 0
+  name  = "security-aggregator-${var.environment}"
 
-  name        = "security-hub-findings-${var.environment}"
-  description = "Capture Security Hub findings for alerting"
-
-  event_pattern = jsonencode({
-    source      = ["aws.securityhub"]
-    detail-type = ["Security Hub Findings - Imported"]
-    detail = {
-      findings = {
-        Severity = {
-          Label = ["CRITICAL", "HIGH"]
-        }
-      }
-    }
-  })
+  account_aggregation_sources {
+    account_ids = [data.aws_caller_identity.current.account_id]
+    regions     = [var.aws_region]
+  }
 
   tags = merge(
     var.tags,
     {
-      Name = "security-hub-findings-rule"
+      Name = "config-aggregator"
     }
   )
 }
 
-resource "aws_cloudwatch_event_target" "security_hub_log_group" {
-  count = var.enable_security_hub ? 1 : 0
-
-  rule      = aws_cloudwatch_event_rule.security_hub_findings[0].name
-  target_id = "SecurityHubFindingsLogGroup"
-  arn       = aws_cloudwatch_log_group.security_services.arn
-}
-
-# ============================================================================
-# AWS Config - Configuration Recording and Compliance (SOC 2 CC7.2)
-# ============================================================================
-
-# IAM role for AWS Config
-resource "aws_iam_role" "config_role" {
+# IAM Role for AWS Config
+resource "aws_iam_role" "config" {
   count = var.enable_config ? 1 : 0
-
-  name = "aws-config-role-${var.environment}"
+  name  = "aws-config-role-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -388,23 +333,21 @@ resource "aws_iam_role" "config_role" {
   tags = merge(
     var.tags,
     {
-      Name = "aws-config-role"
+      Name = "config-role"
     }
   )
 }
 
 resource "aws_iam_role_policy_attachment" "config_policy" {
-  count = var.enable_config ? 1 : 0
-
-  role       = aws_iam_role.config_role[0].name
+  count      = var.enable_config ? 1 : 0
+  role       = aws_iam_role.config[0].name
   policy_arn = "arn:aws:iam::aws:policy/service-role/ConfigRole"
 }
 
-resource "aws_iam_role_policy" "config_s3_policy" {
+resource "aws_iam_role_policy" "config_s3" {
   count = var.enable_config ? 1 : 0
-
-  name = "config-s3-policy"
-  role = aws_iam_role.config_role[0].id
+  name  = "config-s3-policy"
+  role  = aws_iam_role.config[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -435,58 +378,42 @@ resource "aws_iam_role_policy" "config_s3_policy" {
 
 # AWS Config Recorder
 resource "aws_config_configuration_recorder" "main" {
-  count = var.enable_config ? 1 : 0
-
-  name       = "config-recorder-${var.environment}"
-  role_arn   = aws_iam_role.config_role[0].arn
-  depends_on = [aws_iam_role_policy_attachment.config_policy]
+  count       = var.enable_config ? 1 : 0
+  name        = "security-recorder-${var.environment}"
+  role_arn    = aws_iam_role.config[0].arn
+  depends_on  = [aws_iam_role_policy_attachment.config_policy]
 
   recording_group {
     all_supported = var.config_all_supported
     include_global = true
   }
-
-  tags = merge(
-    var.tags,
-    {
-      Name = "config-recorder"
-    }
-  )
 }
 
 resource "aws_config_configuration_recorder_status" "main" {
-  count = var.enable_config ? 1 : 0
-
-  name              = aws_config_configuration_recorder.main[0].name
-  is_enabled        = true
-  depends_on        = [aws_config_delivery_channel.main]
-  start_recording   = true
+  count              = var.enable_config ? 1 : 0
+  name               = aws_config_configuration_recorder.main[0].name
+  is_enabled         = true
+  depends_on         = [aws_config_delivery_channel.main]
+  start_recording    = true
 }
 
 # AWS Config Delivery Channel
 resource "aws_config_delivery_channel" "main" {
-  count = var.enable_config ? 1 : 0
+  count           = var.enable_config ? 1 : 0
+  name            = "security-delivery-channel-${var.environment}"
+  s3_bucket_name  = aws_s3_bucket.security_logs.id
+  depends_on      = [aws_iam_role_policy.config_s3]
 
-  name           = "config-delivery-channel-${var.environment}"
-  s3_bucket_name = aws_s3_bucket.security_logs.id
-  depends_on     = [aws_iam_role_policy.config_s3_policy]
-
-  s3_key_prefix = "config"
+  s3_key_prefix = var.s3_log_bucket_prefix
 
   sns_topic_arn = aws_sns_topic.config_notifications[0].arn
 
-  tags = merge(
-    var.tags,
-    {
-      Name = "config-delivery-channel"
-    }
-  )
+  depends_on = [aws_iam_role_policy.config_s3]
 }
 
-# SNS topic for Config notifications
+# SNS Topic for Config Notifications
 resource "aws_sns_topic" "config_notifications" {
-  count = var.enable_config ? 1 : 0
-
+  count             = var.enable_config ? 1 : 0
   name              = "config-notifications-${var.environment}"
   kms_master_key_id = aws_kms_key.security_services.id
 
@@ -499,12 +426,74 @@ resource "aws_sns_topic" "config_notifications" {
 }
 
 resource "aws_sns_topic_policy" "config_notifications" {
-  count = var.enable_config ? 1 : 0
-
-  arn = aws_sns_topic.config_notifications[0].arn
-
+  count  = var.enable_config ? 1 : 0
+  arn    = aws_sns_topic.config_notifications[0].arn
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "
+        Effect = "Allow"
+        Principal = {
+          Service = "config.amazonaws.com"
+        }
+        Action   = "SNS:Publish"
+        Resource = aws_sns_topic.config_notifications[0].arn
+      }
+    ]
+  })
+}
+
+# Inspector (SOC 2 CC7.1 - Vulnerability Scanning)
+resource "aws_inspector_resource_group" "main" {
+  count = var.enable_inspector ? 1 : 0
+
+  filter {
+    key   = "EC2_INSTANCE_TAG_KEY"
+    value = "Inspector"
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "inspector-resource-group"
+    }
+  )
+}
+
+resource "aws_inspector_assessment_target" "main" {
+  count             = var.enable_inspector ? 1 : 0
+  name              = "security-assessment-target-${var.environment}"
+  resource_group_arn = aws_inspector_resource_group.main[0].arn
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "inspector-target"
+    }
+  )
+}
+
+# Inspector Assessment Template
+resource "aws_inspector_assessment_template" "main" {
+  count              = var.enable_inspector ? 1 : 0
+  name               = "security-assessment-template-${var.environment}"
+  target_arn         = aws_inspector_assessment_target.main[0].arn
+  duration           = 3600
+  rules_package_arns = data.aws_inspector_rules_packages.main.arns
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "inspector-template"
+    }
+  )
+}
+
+# Data source for Inspector rules packages
+data "aws_inspector_rules_packages" "main" {
+  filter = "ACTIVE"
+}
+
+# Macie (Optional - for S3 data classification)
+resource "aws_macie2_account" "main" {
+  count = var.enable_macie ? 1

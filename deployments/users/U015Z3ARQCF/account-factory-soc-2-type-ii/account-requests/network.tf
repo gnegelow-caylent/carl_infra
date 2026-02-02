@@ -1,5 +1,5 @@
 # AFT Account Request for Network Hub (Shared Services OU)
-# SOC 2 Type II Compliant Network Account with Security Services
+# SOC 2 Type II Compliant Network Account with Security Services Enabled
 # Purpose: Transit Gateway, centralized egress, network inspection
 
 terraform {
@@ -27,7 +27,7 @@ provider "aws" {
 
 # Variables for account request configuration
 variable "aws_region" {
-  description = "AWS region for account creation"
+  description = "AWS region for the account"
   type        = string
   default     = "us-east-1"
 }
@@ -45,13 +45,13 @@ variable "account_email" {
 }
 
 variable "managed_organizational_unit" {
-  description = "Target OU for account placement"
+  description = "Organizational Unit where account will be placed"
   type        = string
   default     = "Shared Services"
 }
 
 variable "sso_user_email" {
-  description = "SSO user email for account access"
+  description = "Email for SSO user (optional)"
   type        = string
   default     = ""
 }
@@ -63,33 +63,28 @@ variable "enable_guardduty" {
 }
 
 variable "enable_security_hub" {
-  description = "Enable Security Hub for compliance monitoring"
+  description = "Enable Security Hub for security posture management"
   type        = bool
   default     = true
 }
 
 variable "enable_config" {
-  description = "Enable AWS Config for configuration tracking"
+  description = "Enable AWS Config for compliance monitoring"
   type        = bool
   default     = true
 }
 
-variable "account_tags" {
-  description = "Tags to apply to the account"
-  type        = map(string)
-  default = {
-    OU        = "Shared Services"
-    Purpose   = "Network Hub"
-    ManagedBy = "CARL-AccountFactory"
-  }
+variable "log_retention_days" {
+  description = "CloudWatch Logs retention period in days (SOC 2: 7 years = 2555 days)"
+  type        = number
+  default     = 2555
 }
 
 # AFT Account Request Module
-# This creates the account request that Control Tower will process
+# This creates the AWS account through Control Tower
 module "aft_account_request" {
-  source = "github.com/aws-ia/terraform-aws-control_tower_account_factory//modules/aft-account-request?ref=1.10.1"
+  source = "github.com/aws-ia/terraform-aws-control_tower_account_factory//modules/aft-account-request"
 
-  # Control Tower account parameters
   control_tower_parameters = {
     AccountEmail              = var.account_email
     AccountName               = var.account_name
@@ -97,17 +92,15 @@ module "aft_account_request" {
     SSOUserEmail              = var.sso_user_email != "" ? var.sso_user_email : var.account_email
   }
 
-  # Account tags for metadata and compliance tracking
-  account_tags = merge(
-    var.account_tags,
-    {
-      Environment = "Shared-Services"
-      CostCenter  = "Infrastructure"
-      DataClass   = "Internal"
-    }
-  )
+  account_tags = {
+    OU          = "Shared Services"
+    Purpose     = "Network Hub"
+    ManagedBy   = "CARL-AccountFactory"
+    Compliance  = "SOC2-TypeII"
+    Environment = "Production"
+    CostCenter  = "Infrastructure"
+  }
 
-  # Change management parameters for audit trail (SOC 2 requirement)
   change_management_parameters = {
     change_requested_by = "CARL-AccountFactory"
     change_reason       = "Network Hub account for Transit Gateway, centralized egress, and network inspection"
@@ -120,33 +113,33 @@ module "aft_account_request" {
     enable_config       = var.enable_config
   }
 
-  # Select the appropriate customization for this OU
+  # Select the appropriate customization for Shared Services OU
   account_customizations_name = "infrastructure"
 }
 
-# Outputs for account creation tracking
-output "account_request_id" {
-  description = "AFT account request ID"
-  value       = module.aft_account_request.account_request_id
+# Outputs for account creation details
+output "account_id" {
+  description = "The AWS Account ID of the newly created account"
+  value       = module.aft_account_request.account_id
 }
 
-output "account_id" {
-  description = "AWS Account ID created by AFT"
-  value       = try(module.aft_account_request.account_id, "pending")
+output "account_arn" {
+  description = "The ARN of the newly created account"
+  value       = module.aft_account_request.account_arn
 }
 
 output "account_name" {
-  description = "Name of the created account"
+  description = "The name of the newly created account"
   value       = var.account_name
 }
 
 output "organizational_unit" {
-  description = "Target organizational unit"
+  description = "The Organizational Unit where the account is placed"
   value       = var.managed_organizational_unit
 }
 
 output "security_services_enabled" {
-  description = "Security services enabled for this account"
+  description = "Security services enabled on the account"
   value = {
     guardduty    = var.enable_guardduty
     security_hub = var.enable_security_hub
@@ -156,9 +149,9 @@ output "security_services_enabled" {
 
 ---
 
-# AFT Account Customization for Infrastructure/Network OU
-# SOC 2 Type II Compliant Security Baseline
+# AFT Account Customization for Infrastructure/Network (Shared Services OU)
 # File: aft-account-customizations/infrastructure/main.tf
+# SOC 2 Type II Compliance: Security baseline, logging, and monitoring
 
 terraform {
   required_version = ">= 1.5.0"
@@ -182,11 +175,16 @@ provider "aws" {
   }
 }
 
-# Data sources for account context
+# Data sources for AFT context
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
-# Variables for customization
+variable "log_retention_days" {
+  description = "CloudWatch Logs retention period (SOC 2: 7 years)"
+  type        = number
+  default     = 2555
+}
+
 variable "enable_guardduty" {
   description = "Enable GuardDuty"
   type        = bool
@@ -205,51 +203,56 @@ variable "enable_config" {
   default     = true
 }
 
-variable "log_retention_days" {
-  description = "CloudWatch log retention in days (SOC 2: 7 years)"
-  type        = number
-  default     = 2555
-}
-
 # KMS Key for encryption at rest (SOC 2 requirement)
 resource "aws_kms_key" "account_key" {
-  description             = "KMS key for account-level encryption (SOC 2 Type II)"
+  description             = "KMS key for account-wide encryption (SOC 2 compliance)"
   deletion_window_in_days = 30
   enable_key_rotation     = true
 
   tags = {
-    Name      = "account-encryption-key"
-    Purpose   = "SOC2-Encryption-AtRest"
-    ManagedBy = "CARL-AccountFactory"
+    Name       = "network-account-key"
+    Purpose    = "Account-wide encryption"
+    Compliance = "SOC2-TypeII"
   }
 }
 
 resource "aws_kms_alias" "account_key_alias" {
-  name          = "alias/account-${data.aws_caller_identity.current.account_id}"
+  name          = "alias/network-account-key"
   target_key_id = aws_kms_key.account_key.key_id
 }
 
-# CloudTrail for audit logging (SOC 2 requirement)
-resource "aws_s3_bucket" "cloudtrail_logs" {
-  bucket = "cloudtrail-logs-${data.aws_caller_identity.current.account_id}-${data.aws_region.current.name}"
+# CloudWatch Log Group for centralized logging (SOC 2 requirement)
+resource "aws_cloudwatch_log_group" "network_account_logs" {
+  name              = "/aws/network-account/logs"
+  retention_in_days = var.log_retention_days
+  kms_key_id        = aws_kms_key.account_key.arn
 
   tags = {
-    Name      = "cloudtrail-logs"
-    Purpose   = "SOC2-AuditTrail"
-    ManagedBy = "CARL-AccountFactory"
+    Name       = "network-account-logs"
+    Compliance = "SOC2-TypeII"
   }
 }
 
-resource "aws_s3_bucket_versioning" "cloudtrail_logs" {
-  bucket = aws_s3_bucket.cloudtrail_logs.id
+# CloudTrail for audit logging (SOC 2 requirement)
+resource "aws_s3_bucket" "cloudtrail_bucket" {
+  bucket = "network-account-cloudtrail-${data.aws_caller_identity.current.account_id}"
+
+  tags = {
+    Name       = "network-account-cloudtrail"
+    Compliance = "SOC2-TypeII"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "cloudtrail_versioning" {
+  bucket = aws_s3_bucket.cloudtrail_bucket.id
 
   versioning_configuration {
     status = "Enabled"
   }
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail_logs" {
-  bucket = aws_s3_bucket.cloudtrail_logs.id
+resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail_encryption" {
+  bucket = aws_s3_bucket.cloudtrail_bucket.id
 
   rule {
     apply_server_side_encryption_by_default {
@@ -260,8 +263,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail_logs" 
   }
 }
 
-resource "aws_s3_bucket_public_access_block" "cloudtrail_logs" {
-  bucket = aws_s3_bucket.cloudtrail_logs.id
+resource "aws_s3_bucket_public_access_block" "cloudtrail_pab" {
+  bucket = aws_s3_bucket.cloudtrail_bucket.id
 
   block_public_acls       = true
   block_public_policy     = true
@@ -269,8 +272,8 @@ resource "aws_s3_bucket_public_access_block" "cloudtrail_logs" {
   restrict_public_buckets = true
 }
 
-resource "aws_s3_bucket_policy" "cloudtrail_logs" {
-  bucket = aws_s3_bucket.cloudtrail_logs.id
+resource "aws_s3_bucket_policy" "cloudtrail_policy" {
+  bucket = aws_s3_bucket.cloudtrail_bucket.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -282,7 +285,7 @@ resource "aws_s3_bucket_policy" "cloudtrail_logs" {
           Service = "cloudtrail.amazonaws.com"
         }
         Action   = "s3:GetBucketAcl"
-        Resource = aws_s3_bucket.cloudtrail_logs.arn
+        Resource = aws_s3_bucket.cloudtrail_bucket.arn
       },
       {
         Sid    = "AWSCloudTrailWrite"
@@ -291,7 +294,7 @@ resource "aws_s3_bucket_policy" "cloudtrail_logs" {
           Service = "cloudtrail.amazonaws.com"
         }
         Action   = "s3:PutObject"
-        Resource = "${aws_s3_bucket.cloudtrail_logs.arn}/*"
+        Resource = "${aws_s3_bucket.cloudtrail_bucket.arn}/*"
         Condition = {
           StringEquals = {
             "s3:x-amz-acl" = "bucket-owner-full-control"
@@ -302,99 +305,24 @@ resource "aws_s3_bucket_policy" "cloudtrail_logs" {
   })
 }
 
-resource "aws_cloudtrail" "account_trail" {
-  name                          = "account-trail"
-  s3_bucket_name                = aws_s3_bucket.cloudtrail_logs.id
+resource "aws_cloudtrail" "network_account_trail" {
+  name                          = "network-account-trail"
+  s3_bucket_name                = aws_s3_bucket.cloudtrail_bucket.id
   include_global_service_events = true
   is_multi_region_trail         = true
   enable_log_file_validation    = true
-  depends_on                    = [aws_s3_bucket_policy.cloudtrail_logs]
+  kms_key_id                    = aws_kms_key.account_key.arn
 
-  event_selector {
-    read_write_type           = "All"
-    include_management_events = true
-
-    data_resource {
-      type   = "AWS::S3::Object"
-      values = ["arn:aws:s3:::*/"]
-    }
-
-    data_resource {
-      type   = "AWS::Lambda::Function"
-      values = ["arn:aws:lambda:*:*:function/*"]
-    }
-  }
+  depends_on = [aws_s3_bucket_policy.cloudtrail_policy]
 
   tags = {
-    Name      = "account-cloudtrail"
-    Purpose   = "SOC2-AuditTrail"
-    ManagedBy = "CARL-AccountFactory"
+    Name       = "network-account-trail"
+    Compliance = "SOC2-TypeII"
   }
-}
-
-# CloudWatch Log Group for CloudTrail (SOC 2 requirement)
-resource "aws_cloudwatch_log_group" "cloudtrail_logs" {
-  name              = "/aws/cloudtrail/account-trail"
-  retention_in_days = var.log_retention_days
-  kms_key_id        = aws_kms_key.account_key.arn
-
-  tags = {
-    Name      = "cloudtrail-logs"
-    Purpose   = "SOC2-AuditTrail"
-    ManagedBy = "CARL-AccountFactory"
-  }
-}
-
-resource "aws_cloudtrail_event_selector" "log_group" {
-  trail_name = aws_cloudtrail.account_trail.name
-
-  depends_on = [aws_cloudwatch_log_group.cloudtrail_logs]
-}
-
-# IAM Role for CloudTrail to write to CloudWatch Logs
-resource "aws_iam_role" "cloudtrail_logs_role" {
-  name = "cloudtrail-logs-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Service = "cloudtrail.amazonaws.com"
-        }
-        Action = "sts:AssumeRole"
-      }
-    ]
-  })
-
-  tags = {
-    Name      = "cloudtrail-logs-role"
-    ManagedBy = "CARL-AccountFactory"
-  }
-}
-
-resource "aws_iam_role_policy" "cloudtrail_logs_policy" {
-  name = "cloudtrail-logs-policy"
-  role = aws_iam_role.cloudtrail_logs_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
-        Resource = "${aws_cloudwatch_log_group.cloudtrail_logs.arn}:*"
-      }
-    ]
-  })
 }
 
 # GuardDuty for threat detection (SOC 2 requirement)
-resource "aws_guardduty_detector" "account" {
+resource "aws_guardduty_detector" "network_account" {
   count = var.enable_guardduty ? 1 : 0
 
   enable = true
@@ -411,33 +339,37 @@ resource "aws_guardduty_detector" "account" {
   }
 
   tags = {
-    Name      = "account-guardduty"
-    Purpose   = "SOC2-ThreatDetection"
-    ManagedBy = "CARL-AccountFactory"
+    Name       = "network-account-detector"
+    Compliance = "SOC2-TypeII"
   }
 }
 
-# Security Hub for compliance monitoring (SOC 2 requirement)
-resource "aws_securityhub_account" "account" {
+# Security Hub for security posture (SOC 2 requirement)
+resource "aws_securityhub_account" "network_account" {
   count = var.enable_security_hub ? 1 : 0
 
   tags = {
-    Name      = "account-security-hub"
-    Purpose   = "SOC2-ComplianceMonitoring"
-    ManagedBy = "CARL-AccountFactory"
+    Name       = "network-account-hub"
+    Compliance = "SOC2-TypeII"
   }
 }
 
 resource "aws_securityhub_standards_subscription" "cis" {
   count           = var.enable_security_hub ? 1 : 0
   standards_arn   = "arn:aws:securityhub:${data.aws_region.current.name}::standards/aws-foundational-security-best-practices/v/1.0.0"
-  depends_on      = [aws_securityhub_account.account]
+  depends_on      = [aws_securityhub_account.network_account]
 }
 
-# AWS Config for configuration tracking (SOC 2 requirement)
-resource "aws_config_configuration_aggregator" "account" {
+resource "aws_securityhub_standards_subscription" "pci_dss" {
+  count           = var.enable_security_hub ? 1 : 0
+  standards_arn   = "arn:aws:securityhub:${data.aws_region.current.name}::standards/pci-dss/v/3.2.1"
+  depends_on      = [aws_securityhub_account.network_account]
+}
+
+# AWS Config for compliance monitoring (SOC 2 requirement)
+resource "aws_config_configuration_aggregator" "network_account" {
   count = var.enable_config ? 1 : 0
-  name  = "account-aggregator"
+  name  = "network-account-aggregator"
 
   account_aggregation_sources {
     account_ids = [data.aws_caller_identity.current.account_id]
@@ -445,44 +377,86 @@ resource "aws_config_configuration_aggregator" "account" {
   }
 
   tags = {
-    Name      = "account-config-aggregator"
-    Purpose   = "SOC2-ConfigurationTracking"
-    ManagedBy = "CARL-AccountFactory"
+    Name       = "network-account-aggregator"
+    Compliance = "SOC2-TypeII"
   }
 }
 
-resource "aws_config_configuration_recorder" "account" {
-  count = var.enable_config ? 1 : 0
-  name  = "account-recorder"
-
+resource "aws_config_configuration_recorder" "network_account" {
+  count       = var.enable_config ? 1 : 0
+  name        = "network-account-recorder"
+  role_arn    = aws_iam_role.config_role[0].arn
   recording_group {
     all_supported = true
-    include_global = true
   }
 
-  depends_on = [aws_iam_role_policy.config_policy]
+  depends_on = [aws_iam_role_policy_attachment.config_policy]
 }
 
-resource "aws_config_configuration_recorder_status" "account" {
+resource "aws_config_delivery_channel" "network_account" {
+  count           = var.enable_config ? 1 : 0
+  name            = "network-account-channel"
+  s3_bucket_name  = aws_s3_bucket.config_bucket[0].id
+  sns_topic_arn   = aws_sns_topic.config_notifications[0].arn
+  depends_on      = [aws_config_configuration_recorder.network_account]
+}
+
+resource "aws_config_configuration_recorder_status" "network_account" {
   count       = var.enable_config ? 1 : 0
-  name        = aws_config_configuration_recorder.account[0].name
+  name        = aws_config_configuration_recorder.network_account[0].name
   is_enabled  = true
-  depends_on  = [aws_config_delivery_channel.account]
+  depends_on  = [aws_config_delivery_channel.network_account]
 }
 
-resource "aws_config_delivery_channel" "account" {
-  count = var.enable_config ? 1 : 0
-  name  = "account-channel"
-
-  s3_bucket_name = aws_s3_bucket.config_bucket[0].id
-
-  depends_on = [aws_config_configuration_recorder.account]
-}
-
+# S3 bucket for Config (SOC 2 requirement)
 resource "aws_s3_bucket" "config_bucket" {
   count  = var.enable_config ? 1 : 0
-  bucket = "aws-config-bucket-${data.aws_caller_identity.current.account_id}-${data.aws_region.current.name}"
+  bucket = "network-account-config-${data.aws_caller_identity.current.account_id}"
 
   tags = {
-    Name      = "config-bucket"
-    Purpose   = "SOC2-ConfigurationTracking
+    Name       = "network-account-config"
+    Compliance = "SOC2-TypeII"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "config_versioning" {
+  count  = var.enable_config ? 1 : 0
+  bucket = aws_s3_bucket.config_bucket[0].id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "config_encryption" {
+  count  = var.enable_config ? 1 : 0
+  bucket = aws_s3_bucket.config_bucket[0].id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.account_key.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "config_pab" {
+  count  = var.enable_config ? 1 : 0
+  bucket = aws_s3_bucket.config_bucket[0].id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# SNS topic for Config notifications
+resource "aws_sns_topic" "config_notifications" {
+  count             = var.enable_config ? 1 : 0
+  name              = "network-account-config-notifications"
+  kms_master_key_id = aws_kms_key.account_key.id
+
+  tags = {
+    Name       = "network-account-config-notifications"
+    Compliance = "SOC2-TypeII"

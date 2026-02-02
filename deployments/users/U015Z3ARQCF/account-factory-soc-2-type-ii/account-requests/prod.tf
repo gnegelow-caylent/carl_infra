@@ -1,6 +1,6 @@
 # AFT Account Request Module for Production Workloads
-# Implements SOC 2 Type II compliance controls
-# Creates AWS account via Control Tower with security baseline
+# Implements SOC 2 Type II compliant AWS account provisioning via AWS Control Tower
+# This module creates a new managed account with security baselines and compliance controls
 
 terraform {
   required_version = ">= 1.5.0"
@@ -19,7 +19,6 @@ provider "aws" {
     tags = {
       ManagedBy  = "CARL-AccountFactory"
       Compliance = "SOC2"
-      CreatedBy  = "Terraform"
       CreatedAt  = timestamp()
     }
   }
@@ -45,13 +44,13 @@ variable "account_email" {
 }
 
 variable "managed_organizational_unit" {
-  description = "Organizational Unit where account will be placed"
+  description = "The target OU for the account"
   type        = string
   default     = "Workloads"
 }
 
 variable "sso_user_email" {
-  description = "Email for SSO user (optional)"
+  description = "Email address for SSO user (optional)"
   type        = string
   default     = ""
 }
@@ -80,14 +79,8 @@ variable "enable_config" {
   default     = true
 }
 
-variable "log_retention_days" {
-  description = "CloudWatch Logs retention period in days (SOC 2: 7 years = 2555 days)"
-  type        = number
-  default     = 2555
-}
-
 variable "account_tags" {
-  description = "Tags to apply to the account"
+  description = "Additional tags for the account"
   type        = map(string)
   default = {
     OU         = "Workloads"
@@ -96,16 +89,23 @@ variable "account_tags" {
   }
 }
 
-# Data source for Control Tower management account
+variable "log_retention_days" {
+  description = "CloudWatch Logs retention period in days (SOC 2 requires 7 years)"
+  type        = number
+  default     = 2555
+}
+
+# Data source to reference Control Tower management account
 data "aws_caller_identity" "current" {}
 
 data "aws_organizations_organization" "org" {}
 
 # AFT Account Request Module
-# Uses official AWS Control Tower Account Factory for Terraform
+# This module integrates with AWS Control Tower to provision a new managed account
 module "aft_account_request" {
   source = "github.com/aws-ia/terraform-aws-control_tower_account_factory//modules/aft-account-request"
 
+  # Control Tower account creation parameters
   control_tower_parameters = {
     AccountEmail              = var.account_email
     AccountName               = var.account_name
@@ -113,85 +113,78 @@ module "aft_account_request" {
     SSOUserEmail              = var.sso_user_email != "" ? var.sso_user_email : var.account_email
   }
 
+  # Account tags for metadata and compliance tracking
   account_tags = merge(
     var.account_tags,
     {
-      Purpose    = var.account_purpose
-      CreatedBy  = "Terraform-AFT"
-      Compliance = "SOC2-Type-II"
+      Purpose           = var.account_purpose
+      ComplianceFramework = "SOC2-TypeII"
+      EncryptionEnabled = "true"
+      LoggingEnabled    = "true"
+      AuditTrailEnabled = "true"
     }
   )
 
+  # Change management parameters for audit trail (SOC 2 requirement)
   change_management_parameters = {
-    change_requested_by = "terraform-automation"
-    change_type         = "New Account"
-    notes               = "SOC 2 Type II compliant production account for ${var.account_purpose}"
+    change_requested_by = "CARL-AccountFactory"
+    change_reason       = "Automated account provisioning for ${var.account_purpose}"
   }
 
+  # Custom fields to trigger security customizations
   custom_fields = {
     enable_guardduty    = var.enable_guardduty
     enable_security_hub = var.enable_security_hub
     enable_config       = var.enable_config
+    soc2_compliance     = "true"
+    encryption_enabled  = "true"
   }
 
-  account_customizations_name = "workloads"
+  # Select the appropriate customization based on OU
+  account_customizations_name = var.managed_organizational_unit == "Workloads" ? "workloads" : "default"
 }
 
 # Outputs for account creation details
 output "account_id" {
-  description = "ID of the newly created AWS account"
+  description = "The ID of the newly created AWS account"
   value       = try(module.aft_account_request.account_id, "pending")
 }
 
 output "account_arn" {
-  description = "ARN of the newly created AWS account"
+  description = "The ARN of the newly created AWS account"
   value       = try(module.aft_account_request.account_arn, "pending")
 }
 
 output "account_name" {
-  description = "Name of the newly created AWS account"
+  description = "The name of the newly created AWS account"
   value       = var.account_name
 }
 
-output "organizational_unit" {
-  description = "Organizational Unit where account is placed"
-  value       = var.managed_organizational_unit
-}
-
 output "account_email" {
-  description = "Email address of the newly created AWS account"
+  description = "The email address of the newly created AWS account"
   value       = var.account_email
 }
 
-output "sso_user_email" {
-  description = "SSO user email for account access"
-  value       = var.sso_user_email != "" ? var.sso_user_email : var.account_email
+output "organizational_unit" {
+  description = "The organizational unit where the account was created"
+  value       = var.managed_organizational_unit
 }
 
-output "security_services_enabled" {
-  description = "Security services enabled on the account"
-  value = {
-    guardduty    = var.enable_guardduty
-    security_hub = var.enable_security_hub
-    config       = var.enable_config
-  }
+output "account_status" {
+  description = "Status of the account creation request"
+  value       = try(module.aft_account_request.account_status, "PENDING")
 }
 
-output "compliance_framework" {
-  description = "Compliance framework applied to account"
-  value       = "SOC 2 Type II"
+output "customization_name" {
+  description = "The customization template applied to this account"
+  value       = var.managed_organizational_unit == "Workloads" ? "workloads" : "default"
 }
 
-output "log_retention_days" {
-  description = "CloudWatch Logs retention period for audit trail"
-  value       = var.log_retention_days
-}
+---
 
-# AFT Account Customization for Workloads OU
-# This file should be placed in: aft-account-customizations/workloads/main.tf
-
-# Security baseline customization for production workloads
-# Implements SOC 2 Type II controls
+# AFT Account Customizations for Workloads OU
+# Applies SOC 2 Type II security baselines to production workload accounts
+# File: aft-account-customizations/workloads/main.tf
 
 terraform {
   required_version = ">= 1.5.0"
@@ -206,10 +199,6 @@ terraform {
 provider "aws" {
   region = var.aws_region
 
-  assume_role {
-    role_arn = "arn:aws:iam::${var.account_id}:role/AWSControlTowerExecution"
-  }
-
   default_tags {
     tags = {
       ManagedBy  = "CARL-AccountFactory"
@@ -218,14 +207,9 @@ provider "aws" {
   }
 }
 
-variable "aws_region" {
-  description = "AWS region"
-  type        = string
-  default     = "us-east-1"
-}
-
+# AFT-provided variables for account context
 variable "account_id" {
-  description = "Account ID where customization is applied"
+  description = "The ID of the account being customized"
   type        = string
 }
 
@@ -244,44 +228,64 @@ variable "audit_account_id" {
   type        = string
 }
 
+variable "aws_region" {
+  description = "AWS region"
+  type        = string
+  default     = "us-east-1"
+}
+
 variable "log_retention_days" {
-  description = "CloudWatch Logs retention in days"
+  description = "CloudWatch Logs retention in days (SOC 2: 7 years)"
   type        = number
   default     = 2555
 }
 
-# KMS Key for encryption at rest (SOC 2 control)
-resource "aws_kms_key" "account_key" {
-  description             = "KMS key for SOC 2 encryption at rest in account ${var.account_id}"
+# KMS Key for encryption at rest (SOC 2 requirement)
+resource "aws_kms_key" "workload_key" {
+  description             = "KMS key for workload account encryption (SOC 2 compliance)"
   deletion_window_in_days = 30
   enable_key_rotation     = true
 
   tags = {
-    Name       = "account-encryption-key"
-    Purpose    = "SOC2-Encryption-At-Rest"
-    ManagedBy  = "CARL-AccountFactory"
-    Compliance = "SOC2"
+    Name        = "workload-encryption-key"
+    Purpose     = "SOC2-Encryption-AtRest"
+    ManagedBy   = "CARL-AccountFactory"
+    Compliance  = "SOC2"
   }
 }
 
-resource "aws_kms_alias" "account_key_alias" {
-  name          = "alias/account-${var.account_id}-key"
-  target_key_id = aws_kms_key.account_key.key_id
+resource "aws_kms_alias" "workload_key_alias" {
+  name          = "alias/workload-encryption"
+  target_key_id = aws_kms_key.workload_key.key_id
 }
 
-# CloudTrail for audit logging (SOC 2 control)
-resource "aws_s3_bucket" "cloudtrail_bucket" {
-  bucket = "cloudtrail-logs-${var.account_id}-${data.aws_caller_identity.current.account_id}"
+# CloudWatch Log Group for centralized logging (SOC 2 requirement)
+resource "aws_cloudwatch_log_group" "workload_logs" {
+  name              = "/aws/workload/account-${var.account_id}"
+  retention_in_days = var.log_retention_days
+  kms_key_id        = aws_kms_key.workload_key.arn
 
   tags = {
-    Name       = "cloudtrail-logs"
-    Purpose    = "SOC2-Audit-Trail"
+    Name       = "workload-logs"
+    Purpose    = "SOC2-AuditTrail"
     ManagedBy  = "CARL-AccountFactory"
     Compliance = "SOC2"
   }
 }
 
-resource "aws_s3_bucket_versioning" "cloudtrail_bucket_versioning" {
+# CloudTrail for API audit logging (SOC 2 requirement)
+resource "aws_s3_bucket" "cloudtrail_bucket" {
+  bucket = "cloudtrail-logs-${var.account_id}-${var.aws_region}"
+
+  tags = {
+    Name       = "cloudtrail-bucket"
+    Purpose    = "SOC2-AuditTrail"
+    ManagedBy  = "CARL-AccountFactory"
+    Compliance = "SOC2"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "cloudtrail_versioning" {
   bucket = aws_s3_bucket.cloudtrail_bucket.id
 
   versioning_configuration {
@@ -295,7 +299,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail_encryp
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.account_key.arn
+      kms_master_key_id = aws_kms_key.workload_key.arn
     }
     bucket_key_enabled = true
   }
@@ -338,141 +342,44 @@ resource "aws_s3_bucket_policy" "cloudtrail_policy" {
             "s3:x-amz-acl" = "bucket-owner-full-control"
           }
         }
-      },
-      {
-        Sid    = "DenyUnencryptedObjectUploads"
-        Effect = "Deny"
-        Principal = "*"
-        Action   = "s3:PutObject"
-        Resource = "${aws_s3_bucket.cloudtrail_bucket.arn}/*"
-        Condition = {
-          StringNotEquals = {
-            "s3:x-amz-server-side-encryption" = "aws:kms"
-          }
-        }
-      },
-      {
-        Sid    = "DenyInsecureTransport"
-        Effect = "Deny"
-        Principal = "*"
-        Action   = "s3:*"
-        Resource = [
-          aws_s3_bucket.cloudtrail_bucket.arn,
-          "${aws_s3_bucket.cloudtrail_bucket.arn}/*"
-        ]
-        Condition = {
-          Bool = {
-            "aws:SecureTransport" = "false"
-          }
-        }
       }
     ]
   })
 }
 
-# CloudTrail trail for account activity logging
-resource "aws_cloudtrail" "account_trail" {
-  name                          = "account-${var.account_id}-trail"
+resource "aws_cloudtrail" "workload_trail" {
+  name                          = "workload-account-trail"
   s3_bucket_name                = aws_s3_bucket.cloudtrail_bucket.id
   include_global_service_events = true
   is_multi_region_trail         = true
   enable_log_file_validation    = true
-  kms_key_id                    = aws_kms_key.account_key.arn
+  depends_on                    = [aws_s3_bucket_policy.cloudtrail_policy]
 
-  depends_on = [aws_s3_bucket_policy.cloudtrail_policy]
+  event_selector {
+    read_write_type           = "All"
+    include_management_events = true
+
+    data_resource {
+      type   = "AWS::S3::Object"
+      values = ["arn:aws:s3:::*/*"]
+    }
+
+    data_resource {
+      type   = "AWS::Lambda::Function"
+      values = ["arn:aws:lambda:*:*:function/*"]
+    }
+  }
 
   tags = {
-    Name       = "account-trail"
-    Purpose    = "SOC2-Audit-Trail"
+    Name       = "workload-trail"
+    Purpose    = "SOC2-AuditTrail"
     ManagedBy  = "CARL-AccountFactory"
     Compliance = "SOC2"
   }
 }
 
-# CloudWatch Log Group for CloudTrail logs
-resource "aws_cloudwatch_log_group" "cloudtrail_logs" {
-  name              = "/aws/cloudtrail/account-${var.account_id}"
-  retention_in_days = var.log_retention_days
-
-  kms_key_id = "${aws_kms_key.account_key.arn}:*"
-
-  tags = {
-    Name       = "cloudtrail-logs"
-    Purpose    = "SOC2-Audit-Trail"
-    ManagedBy  = "CARL-AccountFactory"
-    Compliance = "SOC2"
-  }
-}
-
-# IAM Role for CloudTrail to write to CloudWatch Logs
-resource "aws_iam_role" "cloudtrail_cloudwatch_role" {
-  name = "cloudtrail-cloudwatch-logs-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Service = "cloudtrail.amazonaws.com"
-        }
-        Action = "sts:AssumeRole"
-      }
-    ]
-  })
-
-  tags = {
-    Name       = "cloudtrail-cloudwatch-role"
-    ManagedBy  = "CARL-AccountFactory"
-    Compliance = "SOC2"
-  }
-}
-
-resource "aws_iam_role_policy" "cloudtrail_cloudwatch_policy" {
-  name = "cloudtrail-cloudwatch-logs-policy"
-  role = aws_iam_role.cloudtrail_cloudwatch_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
-        Resource = "${aws_cloudwatch_log_group.cloudtrail_logs.arn}:*"
-      }
-    ]
-  })
-}
-
-# Update CloudTrail to include CloudWatch Logs
-resource "aws_cloudtrail" "account_trail_with_logs" {
-  name                          = "account-${var.account_id}-trail"
-  s3_bucket_name                = aws_s3_bucket.cloudtrail_bucket.id
-  include_global_service_events = true
-  is_multi_region_trail         = true
-  enable_log_file_validation    = true
-  kms_key_id                    = aws_kms_key.account_key.arn
-  cloud_watch_logs_group_arn    = "${aws_cloudwatch_log_group.cloudtrail_logs.arn}:*"
-  cloud_watch_logs_role_arn     = aws_iam_role.cloudtrail_cloudwatch_role.arn
-
-  depends_on = [
-    aws_s3_bucket_policy.cloudtrail_policy,
-    aws_iam_role_policy.cloudtrail_cloudwatch_policy
-  ]
-
-  tags = {
-    Name       = "account-trail"
-    Purpose    = "SOC2-Audit-Trail"
-    ManagedBy  = "CARL-AccountFactory"
-    Compliance = "SOC2"
-  }
-}
-
-# GuardDuty for threat detection (SOC 2 control)
-resource "aws_guardduty_detector" "account_detector" {
+# GuardDuty for threat detection (SOC 2 requirement)
+resource "aws_guardduty_detector" "workload" {
   enable = true
 
   datasources {
@@ -487,3 +394,87 @@ resource "aws_guardduty_detector" "account_detector" {
   }
 
   tags = {
+    Name       = "workload-guardduty"
+    Purpose    = "SOC2-ThreatDetection"
+    ManagedBy  = "CARL-AccountFactory"
+    Compliance = "SOC2"
+  }
+}
+
+# Security Hub for compliance monitoring (SOC 2 requirement)
+resource "aws_securityhub_account" "workload" {}
+
+resource "aws_securityhub_standards_subscription" "pci_dss" {
+  standards_arn = "arn:aws:securityhub:${var.aws_region}::standards/aws-foundational-security-best-practices/v/1.0.0"
+  depends_on    = [aws_securityhub_account.workload]
+}
+
+resource "aws_securityhub_standards_subscription" "cis" {
+  standards_arn = "arn:aws:securityhub:${var.aws_region}::standards/cis-aws-foundations-benchmark/v/1.2.0"
+  depends_on    = [aws_securityhub_account.workload]
+}
+
+# AWS Config for compliance tracking (SOC 2 requirement)
+resource "aws_config_configuration_aggregator" "workload" {
+  name = "workload-aggregator"
+
+  account_aggregation_sources {
+    account_ids = [var.account_id]
+    regions     = [var.aws_region]
+  }
+
+  tags = {
+    Name       = "workload-config-aggregator"
+    Purpose    = "SOC2-ComplianceTracking"
+    ManagedBy  = "CARL-AccountFactory"
+    Compliance = "SOC2"
+  }
+}
+
+resource "aws_config_configuration_recorder" "workload" {
+  name       = "workload-recorder"
+  role_arn   = aws_iam_role.config_role.arn
+  depends_on = [aws_iam_role_policy_attachment.config_policy]
+
+  recording_group {
+    all_supported = true
+    include_global = true
+  }
+}
+
+resource "aws_config_configuration_recorder_status" "workload" {
+  name       = aws_config_configuration_recorder.workload.name
+  is_enabled = true
+  depends_on = [aws_config_delivery_channel.workload]
+}
+
+resource "aws_config_delivery_channel" "workload" {
+  name           = "workload-channel"
+  s3_bucket_name = aws_s3_bucket.config_bucket.id
+  depends_on     = [aws_config_configuration_recorder.workload]
+}
+
+resource "aws_s3_bucket" "config_bucket" {
+  bucket = "aws-config-bucket-${var.account_id}-${var.aws_region}"
+
+  tags = {
+    Name       = "config-bucket"
+    Purpose    = "SOC2-ComplianceTracking"
+    ManagedBy  = "CARL-AccountFactory"
+    Compliance = "SOC2"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "config_versioning" {
+  bucket = aws_s3_bucket.config_bucket.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "config_encryption" {
+  bucket = aws_s3_bucket.config_bucket.id
+
+  rule {
+    apply_

@@ -19,8 +19,8 @@ provider "aws" {
     tags = {
       ManagedBy  = "CARL"
       Compliance = "SOC2-TypeII"
-      CreatedBy  = "Terraform"
-      Environment = var.environment
+      Purpose    = "Security-Services"
+      CreatedAt  = timestamp()
     }
   }
 }
@@ -38,14 +38,30 @@ variable "environment" {
   default     = "production"
 }
 
+variable "organization_id" {
+  description = "AWS Organization ID"
+  type        = string
+}
+
+variable "security_account_id" {
+  description = "Security account ID for centralized logging"
+  type        = string
+}
+
+variable "log_retention_days" {
+  description = "CloudWatch Logs retention period in days (SOC 2 requires 7 years minimum)"
+  type        = number
+  default     = 2555
+}
+
 variable "enable_guardduty" {
-  description = "Enable GuardDuty for threat detection"
+  description = "Enable AWS GuardDuty for threat detection"
   type        = bool
   default     = true
 }
 
 variable "enable_security_hub" {
-  description = "Enable Security Hub for security posture management"
+  description = "Enable AWS Security Hub for security posture management"
   type        = bool
   default     = true
 }
@@ -56,28 +72,16 @@ variable "enable_config" {
   default     = true
 }
 
-variable "log_retention_days" {
-  description = "CloudWatch log retention in days (SOC 2 requires 7 years minimum for audit logs)"
+variable "kms_key_deletion_window" {
+  description = "KMS key deletion window in days"
   type        = number
-  default     = 2555
+  default     = 30
 }
 
-variable "s3_log_bucket_name" {
-  description = "S3 bucket name for centralized logging"
-  type        = string
-  default     = ""
-}
-
-variable "kms_key_id" {
-  description = "KMS key ID for encryption at rest"
-  type        = string
-  default     = ""
-}
-
-variable "organization_id" {
-  description = "AWS Organization ID for delegated admin setup"
-  type        = string
-  default     = ""
+variable "tags" {
+  description = "Additional tags to apply to resources"
+  type        = map(string)
+  default     = {}
 }
 
 # Data source for current AWS account
@@ -85,63 +89,139 @@ data "aws_caller_identity" "current" {}
 
 data "aws_region" "current" {}
 
-# KMS Key for encryption at rest (if not provided)
+# KMS Key for encryption at rest - SOC 2 Control: Encryption
 resource "aws_kms_key" "security_services" {
-  count                   = var.kms_key_id == "" ? 1 : 0
-  description             = "KMS key for security services encryption"
-  deletion_window_in_days = 30
+  description             = "KMS key for security services encryption (GuardDuty, Config, Security Hub)"
+  deletion_window_in_days = var.kms_key_deletion_window
   enable_key_rotation     = true
 
-  tags = {
-    Name = "security-services-key"
-  }
+  tags = merge(
+    var.tags,
+    {
+      Name = "security-services-key"
+    }
+  )
 }
 
 resource "aws_kms_alias" "security_services" {
-  count         = var.kms_key_id == "" ? 1 : 0
-  name          = "alias/security-services"
-  target_key_id = aws_kms_key.security_services[0].key_id
+  name          = "alias/security-services-${data.aws_caller_identity.current.account_id}"
+  target_key_id = aws_kms_key.security_services.key_id
 }
 
-locals {
-  kms_key_id = var.kms_key_id != "" ? var.kms_key_id : try(aws_kms_key.security_services[0].id, "")
+# KMS Key Policy for security services
+resource "aws_kms_key_policy" "security_services" {
+  key_id = aws_kms_key.security_services.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "Enable IAM User Permissions"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow GuardDuty to use the key"
+        Effect = "Allow"
+        Principal = {
+          Service = "guardduty.amazonaws.com"
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow Config to use the key"
+        Effect = "Allow"
+        Principal = {
+          Service = "config.amazonaws.com"
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow Security Hub to use the key"
+        Effect = "Allow"
+        Principal = {
+          Service = "securityhub.amazonaws.com"
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow CloudWatch Logs"
+        Effect = "Allow"
+        Principal = {
+          Service = "logs.amazonaws.com"
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:CreateGrant",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+        Condition = {
+          ArnLike = {
+            "kms:EncryptionContext:aws:logs:arn" = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
+          }
+        }
+      }
+    ]
+  })
 }
 
-# S3 bucket for security service logs with encryption and versioning
-resource "aws_s3_bucket" "security_logs" {
-  count  = var.s3_log_bucket_name == "" ? 1 : 0
-  bucket = "security-logs-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+# S3 Bucket for Config and GuardDuty findings - SOC 2 Control: Audit Trail
+resource "aws_s3_bucket" "security_findings" {
+  bucket = "security-findings-${data.aws_caller_identity.current.account_id}-${data.aws_region.current.name}"
 
-  tags = {
-    Name = "security-logs"
-  }
+  tags = merge(
+    var.tags,
+    {
+      Name = "security-findings-bucket"
+    }
+  )
 }
 
-resource "aws_s3_bucket_versioning" "security_logs" {
-  count  = var.s3_log_bucket_name == "" ? 1 : 0
-  bucket = aws_s3_bucket.security_logs[0].id
+# Enable versioning for audit trail
+resource "aws_s3_bucket_versioning" "security_findings" {
+  bucket = aws_s3_bucket.security_findings.id
 
   versioning_configuration {
     status = "Enabled"
   }
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "security_logs" {
-  count  = var.s3_log_bucket_name == "" ? 1 : 0
-  bucket = aws_s3_bucket.security_logs[0].id
+# Enable encryption at rest
+resource "aws_s3_bucket_server_side_encryption_configuration" "security_findings" {
+  bucket = aws_s3_bucket.security_findings.id
 
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm     = "aws:kms"
-      kms_master_key_id = local.kms_key_id
+      kms_master_key_id = aws_kms_key.security_services.arn
     }
     bucket_key_enabled = true
   }
 }
 
-resource "aws_s3_bucket_public_access_block" "security_logs" {
-  count  = var.s3_log_bucket_name == "" ? 1 : 0
-  bucket = aws_s3_bucket.security_logs[0].id
+# Block public access
+resource "aws_s3_bucket_public_access_block" "security_findings" {
+  bucket = aws_s3_bucket.security_findings.id
 
   block_public_acls       = true
   block_public_policy     = true
@@ -149,110 +229,229 @@ resource "aws_s3_bucket_public_access_block" "security_logs" {
   restrict_public_buckets = true
 }
 
-resource "aws_s3_bucket_lifecycle_configuration" "security_logs" {
-  count  = var.s3_log_bucket_name == "" ? 1 : 0
-  bucket = aws_s3_bucket.security_logs[0].id
+# Enable logging
+resource "aws_s3_bucket_logging" "security_findings" {
+  bucket = aws_s3_bucket.security_findings.id
 
-  rule {
-    id     = "archive-old-logs"
-    status = "Enabled"
-
-    transition {
-      days          = 90
-      storage_class = "GLACIER"
-    }
-
-    expiration {
-      days = 2555
-    }
-  }
+  target_bucket = aws_s3_bucket.security_findings.id
+  target_prefix = "access-logs/"
 }
 
-locals {
-  s3_log_bucket = var.s3_log_bucket_name != "" ? var.s3_log_bucket_name : try(aws_s3_bucket.security_logs[0].id, "")
-}
-
-# CloudWatch Log Group for security services
-resource "aws_cloudwatch_log_group" "security_services" {
-  name              = "/aws/security-services/account-customization"
-  retention_in_days = var.log_retention_days
-  kms_key_arn       = "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:key/${local.kms_key_id}"
-
-  tags = {
-    Name = "security-services-logs"
-  }
-}
-
-# IAM Role for security services
-resource "aws_iam_role" "security_services" {
-  name = "security-services-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = [
-            "config.amazonaws.com",
-            "guardduty.amazonaws.com",
-            "securityhub.amazonaws.com"
-          ]
-        }
-      }
-    ]
-  })
-
-  tags = {
-    Name = "security-services-role"
-  }
-}
-
-# IAM Policy for security services
-resource "aws_iam_role_policy" "security_services" {
-  name = "security-services-policy"
-  role = aws_iam_role.security_services.id
+# Bucket policy for security services
+resource "aws_s3_bucket_policy" "security_findings" {
+  bucket = aws_s3_bucket.security_findings.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "S3LogsAccess"
+        Sid    = "DenyUnencryptedObjectUploads"
+        Effect = "Deny"
+        Principal = "*"
+        Action = "s3:PutObject"
+        Resource = "${aws_s3_bucket.security_findings.arn}/*"
+        Condition = {
+          StringNotEquals = {
+            "s3:x-amz-server-side-encryption" = "aws:kms"
+          }
+        }
+      },
+      {
+        Sid    = "DenyInsecureTransport"
+        Effect = "Deny"
+        Principal = "*"
+        Action = "s3:*"
+        Resource = [
+          aws_s3_bucket.security_findings.arn,
+          "${aws_s3_bucket.security_findings.arn}/*"
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      },
+      {
+        Sid    = "AllowGuardDutyFindings"
         Effect = "Allow"
+        Principal = {
+          Service = "guardduty.amazonaws.com"
+        }
         Action = [
-          "s3:GetBucketVersioning",
           "s3:PutObject",
           "s3:GetObject"
         ]
+        Resource = "${aws_s3_bucket.security_findings.arn}/*"
+      },
+      {
+        Sid    = "AllowConfigDelivery"
+        Effect = "Allow"
+        Principal = {
+          Service = "config.amazonaws.com"
+        }
+        Action = [
+          "s3:PutObject",
+          "s3:GetBucketVersioning"
+        ]
         Resource = [
-          "arn:aws:s3:::${local.s3_log_bucket}",
-          "arn:aws:s3:::${local.s3_log_bucket}/*"
+          aws_s3_bucket.security_findings.arn,
+          "${aws_s3_bucket.security_findings.arn}/*"
         ]
-      },
-      {
-        Sid    = "KMSDecrypt"
-        Effect = "Allow"
-        Action = [
-          "kms:Decrypt",
-          "kms:GenerateDataKey"
-        ]
-        Resource = "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:key/${local.kms_key_id}"
-      },
-      {
-        Sid    = "CloudWatchLogs"
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
-        Resource = "${aws_cloudwatch_log_group.security_services.arn}:*"
       }
     ]
   })
 }
 
-# GuardDuty Detector for threat detection
+# CloudWatch Log Group for security services - SOC 2 Control: Logging and Monitoring
+resource "aws_cloudwatch_log_group" "security_services" {
+  name              = "/aws/security-services/${data.aws_caller_identity.current.account_id}"
+  retention_in_days = var.log_retention_days
+  kms_key_id        = aws_kms_key.security_services.arn
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "security-services-logs"
+    }
+  )
+}
+
+# IAM Role for Config - SOC 2 Control: Access Control
+resource "aws_iam_role" "config_role" {
+  name = "aws-config-role-${data.aws_caller_identity.current.account_id}"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "config.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "aws-config-role"
+    }
+  )
+}
+
+resource "aws_iam_role_policy_attachment" "config_policy" {
+  role       = aws_iam_role.config_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/ConfigRole"
+}
+
+resource "aws_iam_role_policy" "config_s3_policy" {
+  name = "config-s3-policy"
+  role = aws_iam_role.config_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:GetBucketVersioning"
+        ]
+        Resource = [
+          aws_s3_bucket.security_findings.arn,
+          "${aws_s3_bucket.security_findings.arn}/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = aws_kms_key.security_services.arn
+      }
+    ]
+  })
+}
+
+# AWS Config Recorder - SOC 2 Control: Compliance Monitoring
+resource "aws_config_configuration_recorder" "main" {
+  count       = var.enable_config ? 1 : 0
+  name        = "security-config-recorder"
+  role_arn    = aws_iam_role.config_role.arn
+  recording_group {
+    all_supported = true
+    include_global_resources = true
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.config_policy]
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "security-config-recorder"
+    }
+  )
+}
+
+resource "aws_config_configuration_recorder_status" "main" {
+  count              = var.enable_config ? 1 : 0
+  name               = aws_config_configuration_recorder.main[0].name
+  is_enabled         = true
+  depends_on         = [aws_s3_bucket_policy.security_findings]
+  start_recording    = true
+}
+
+resource "aws_config_delivery_channel" "main" {
+  count                          = var.enable_config ? 1 : 0
+  name                           = "security-config-channel"
+  s3_bucket_name                 = aws_s3_bucket.security_findings.id
+  sns_topic_arn                  = aws_sns_topic.config_notifications.arn
+  include_global_resources       = true
+  depends_on                     = [aws_config_configuration_recorder_status.main]
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "security-config-channel"
+    }
+  )
+}
+
+# SNS Topic for Config notifications
+resource "aws_sns_topic" "config_notifications" {
+  name              = "aws-config-notifications-${data.aws_caller_identity.current.account_id}"
+  kms_master_key_id = aws_kms_key.security_services.id
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "config-notifications"
+    }
+  )
+}
+
+resource "aws_sns_topic_policy" "config_notifications" {
+  arn = aws_sns_topic.config_notifications.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "config.amazonaws.com"
+        }
+        Action   = "SNS:Publish"
+        Resource = aws_sns_topic.config_notifications.arn
+      }
+    ]
+  })
+}
+
+# GuardDuty Detector - SOC 2 Control: Threat Detection
 resource "aws_guardduty_detector" "main" {
   count            = var.enable_guardduty ? 1 : 0
   enable           = true
@@ -267,212 +466,42 @@ resource "aws_guardduty_detector" "main" {
         enable = true
       }
     }
-    malware_protection {
-      scan_ec2_instance_with_findings {
-        ebs_volumes = true
-      }
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "security-guardduty-detector"
     }
-  }
-
-  tags = {
-    Name = "guardduty-detector"
-  }
+  )
 }
 
-# CloudWatch Log Group for GuardDuty findings
-resource "aws_cloudwatch_log_group" "guardduty_findings" {
-  count             = var.enable_guardduty ? 1 : 0
-  name              = "/aws/guardduty/findings"
-  retention_in_days = var.log_retention_days
-  kms_key_arn       = "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:key/${local.kms_key_id}"
+# GuardDuty ThreatIntelSet for custom threat intelligence
+resource "aws_guardduty_threatintelset" "main" {
+  count              = var.enable_guardduty ? 1 : 0
+  detector_id        = aws_guardduty_detector.main[0].id
+  activate           = true
+  format             = "TXT"
+  location           = "${aws_s3_bucket.security_findings.arn}/threat-intel/guardduty-threatintelset.txt"
+  name               = "security-threat-intel-set"
 
-  tags = {
-    Name = "guardduty-findings-logs"
-  }
+  depends_on = [aws_s3_bucket_policy.security_findings]
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "guardduty-threatintelset"
+    }
+  )
 }
 
-# EventBridge rule for GuardDuty findings
+# CloudWatch Event Rule for GuardDuty findings
 resource "aws_cloudwatch_event_rule" "guardduty_findings" {
-  count       = var.enable_guardduty ? 1 : 0
-  name        = "guardduty-findings-rule"
-  description = "Capture GuardDuty findings"
+  count           = var.enable_guardduty ? 1 : 0
+  name            = "guardduty-findings-rule"
+  description     = "Capture GuardDuty findings"
+  event_bus_name  = "default"
 
   event_pattern = jsonencode({
     source      = ["aws.guardduty"]
-    detail-type = ["GuardDuty Finding"]
-  })
-
-  tags = {
-    Name = "guardduty-findings-rule"
-  }
-}
-
-resource "aws_cloudwatch_event_target" "guardduty_findings_logs" {
-  count             = var.enable_guardduty ? 1 : 0
-  rule              = aws_cloudwatch_event_rule.guardduty_findings[0].name
-  target_id         = "GuardDutyFindingsToLogs"
-  arn               = aws_cloudwatch_log_group.guardduty_findings[0].arn
-  role_arn          = aws_iam_role.eventbridge.arn
-  log_group_name    = aws_cloudwatch_log_group.guardduty_findings[0].name
-}
-
-# AWS Config for compliance monitoring
-resource "aws_config_configuration_aggregator" "organization" {
-  count = var.enable_config ? 1 : 0
-  name  = "organization-aggregator"
-
-  account_aggregation_sources {
-    all_regions = true
-  }
-
-  tags = {
-    Name = "organization-aggregator"
-  }
-}
-
-resource "aws_config_configuration_recorder" "main" {
-  count       = var.enable_config ? 1 : 0
-  name        = "default"
-  role_arn    = aws_iam_role.config_recorder[0].arn
-  depends_on  = [aws_iam_role_policy_attachment.config_recorder]
-
-  recording_group {
-    all_supported = true
-    include_global = true
-
-    recording_strategy {
-      use_only = "CONFIG_RECORDER"
-    }
-  }
-
-  tags = {
-    Name = "config-recorder"
-  }
-}
-
-resource "aws_config_configuration_recorder_status" "main" {
-  count              = var.enable_config ? 1 : 0
-  name               = aws_config_configuration_recorder.main[0].name
-  is_enabled         = true
-  depends_on         = [aws_config_delivery_channel.main]
-  start_recording    = true
-}
-
-resource "aws_config_delivery_channel" "main" {
-  count                          = var.enable_config ? 1 : 0
-  name                           = "default"
-  s3_bucket_name                 = local.s3_log_bucket
-  sns_topic_arn                  = aws_sns_topic.config_notifications[0].arn
-  depends_on                     = [aws_config_configuration_recorder.main]
-
-  s3_key_prefix = "config"
-
-  recording_frequency = "CONTINUOUS"
-
-  tags = {
-    Name = "config-delivery-channel"
-  }
-}
-
-# IAM Role for Config Recorder
-resource "aws_iam_role" "config_recorder" {
-  count = var.enable_config ? 1 : 0
-  name  = "config-recorder-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "config.amazonaws.com"
-        }
-      }
-    ]
-  })
-
-  tags = {
-    Name = "config-recorder-role"
-  }
-}
-
-resource "aws_iam_role_policy_attachment" "config_recorder" {
-  count      = var.enable_config ? 1 : 0
-  role       = aws_iam_role.config_recorder[0].name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/ConfigRole"
-}
-
-resource "aws_iam_role_policy" "config_s3" {
-  count = var.enable_config ? 1 : 0
-  name  = "config-s3-policy"
-  role  = aws_iam_role.config_recorder[0].id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "S3Access"
-        Effect = "Allow"
-        Action = [
-          "s3:GetBucketVersioning",
-          "s3:PutObject",
-          "s3:GetObject"
-        ]
-        Resource = [
-          "arn:aws:s3:::${local.s3_log_bucket}",
-          "arn:aws:s3:::${local.s3_log_bucket}/*"
-        ]
-      },
-      {
-        Sid    = "KMSAccess"
-        Effect = "Allow"
-        Action = [
-          "kms:Decrypt",
-          "kms:GenerateDataKey"
-        ]
-        Resource = "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:key/${local.kms_key_id}"
-      }
-    ]
-  })
-}
-
-# SNS Topic for Config notifications
-resource "aws_sns_topic" "config_notifications" {
-  count             = var.enable_config ? 1 : 0
-  name              = "config-notifications"
-  kms_master_key_id = local.kms_key_id
-
-  tags = {
-    Name = "config-notifications"
-  }
-}
-
-resource "aws_sns_topic_policy" "config_notifications" {
-  count  = var.enable_config ? 1 : 0
-  arn    = aws_sns_topic.config_notifications[0].arn
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "AllowConfigPublish"
-        Effect = "Allow"
-        Principal = {
-          Service = "config.amazonaws.com"
-        }
-        Action   = "SNS:Publish"
-        Resource = aws_sns_topic.config_notifications[0].arn
-      }
-    ]
-  })
-}
-
-# Security Hub for security posture management
-resource "aws_securityhub_account" "main" {
-  count = var.enable_security_hub ? 1 : 0
-  tags = {
-    Name = "security-hub"
-  }
-}
-
-resource "aws_
+    detail-type

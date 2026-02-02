@@ -1,5 +1,5 @@
 # CloudTrail Multi-Region Organization Trail with SOC 2 Type II Compliance
-# Implements comprehensive audit logging with encryption, validation, and 7-year retention
+# Implements CC7.2 (audit logging), CC6.7 (encryption), and CC9.2 (access controls)
 
 terraform {
   required_version = ">= 1.5"
@@ -24,19 +24,13 @@ provider "aws" {
 }
 
 provider "aws" {
-  alias  = "cloudtrail_bucket_region"
-  region = var.cloudtrail_bucket_region
+  alias  = "cloudtrail_logs"
+  region = var.primary_region
 }
 
 # Variables
 variable "primary_region" {
-  description = "Primary AWS region for CloudTrail"
-  type        = string
-  default     = "us-east-1"
-}
-
-variable "cloudtrail_bucket_region" {
-  description = "AWS region for CloudTrail S3 bucket"
+  description = "Primary AWS region for CloudTrail resources"
   type        = string
   default     = "us-east-1"
 }
@@ -52,22 +46,21 @@ variable "trail_name" {
   default     = "organization-multi-region-trail"
 }
 
-variable "retention_days" {
-  description = "CloudWatch Logs retention in days (SOC 2: 7 years = 2555 days)"
+variable "s3_bucket_name" {
+  description = "S3 bucket name for CloudTrail logs"
+  type        = string
+}
+
+variable "cloudwatch_log_group_name" {
+  description = "CloudWatch Logs group name for CloudTrail events"
+  type        = string
+  default     = "/aws/cloudtrail/organization-trail"
+}
+
+variable "log_retention_days" {
+  description = "CloudTrail log retention in days (SOC 2 requires 7 years = 2555 days)"
   type        = number
   default     = 2555
-}
-
-variable "enable_log_file_validation" {
-  description = "Enable CloudTrail log file validation (CC7.2)"
-  type        = bool
-  default     = true
-}
-
-variable "enable_cloudwatch_logs" {
-  description = "Enable CloudTrail to CloudWatch Logs integration"
-  type        = bool
-  default     = true
 }
 
 variable "glacier_transition_days" {
@@ -76,49 +69,47 @@ variable "glacier_transition_days" {
   default     = 90
 }
 
-variable "tags" {
-  description = "Additional tags for resources"
-  type        = map(string)
-  default = {
-    Environment = "production"
-    Service     = "audit-logging"
-  }
+variable "enable_log_file_validation" {
+  description = "Enable CloudTrail log file validation (CC7.2)"
+  type        = bool
+  default     = true
 }
 
-# Data source for current AWS account
-data "aws_caller_identity" "current" {}
+variable "include_global_service_events" {
+  description = "Include global service events in trail"
+  type        = bool
+  default     = true
+}
 
-# Data source for current AWS region
-data "aws_region" "current" {}
+variable "is_multi_region_trail" {
+  description = "Enable multi-region trail for complete coverage"
+  type        = bool
+  default     = true
+}
 
-# KMS Key for CloudTrail log encryption (CC6.7)
+variable "is_organization_trail" {
+  description = "Enable organization trail for all member accounts"
+  type        = bool
+  default     = true
+}
+
+variable "enable_cloudwatch_logs" {
+  description = "Enable CloudWatch Logs integration for real-time alerting"
+  type        = bool
+  default     = true
+}
+
+# KMS Key for CloudTrail Log Encryption (CC6.7)
 resource "aws_kms_key" "cloudtrail" {
   description             = "KMS key for CloudTrail log encryption - SOC 2 CC6.7"
   deletion_window_in_days = 30
   enable_key_rotation     = true
 
-  tags = merge(
-    var.tags,
-    {
-      Name = "${var.trail_name}-key"
-    }
-  )
-}
-
-resource "aws_kms_alias" "cloudtrail" {
-  name          = "alias/${var.trail_name}-key"
-  target_key_id = aws_kms_key.cloudtrail.key_id
-}
-
-# KMS Key Policy for CloudTrail
-resource "aws_kms_key_policy" "cloudtrail" {
-  key_id = aws_kms_key.cloudtrail.id
-
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "Enable IAM User Permissions"
+        Sid    = "Enable IAM policies"
         Effect = "Allow"
         Principal = {
           AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
@@ -139,7 +130,7 @@ resource "aws_kms_key_policy" "cloudtrail" {
         Resource = "*"
         Condition = {
           StringLike = {
-            "kms:EncryptionContext:aws:cloudtrail:arn" = "arn:aws:cloudtrail:*:${data.aws_caller_identity.current.account_id}:trail/*"
+            "kms:EncryptionContext:aws:cloudtrail:arn" = "arn:aws:s3:::${var.s3_bucket_name}/*"
           }
         }
       },
@@ -154,25 +145,29 @@ resource "aws_kms_key_policy" "cloudtrail" {
       }
     ]
   })
+
+  tags = {
+    Name = "cloudtrail-encryption-key"
+  }
 }
 
-# S3 Bucket for CloudTrail logs
+resource "aws_kms_alias" "cloudtrail" {
+  name          = "alias/cloudtrail-logs"
+  target_key_id = aws_kms_key.cloudtrail.key_id
+}
+
+# S3 Bucket for CloudTrail Logs with Encryption and Lifecycle
 resource "aws_s3_bucket" "cloudtrail_logs" {
-  provider = aws.cloudtrail_bucket_region
-  bucket   = "${var.trail_name}-logs-${data.aws_caller_identity.current.account_id}-${var.cloudtrail_bucket_region}"
+  bucket = var.s3_bucket_name
 
-  tags = merge(
-    var.tags,
-    {
-      Name = "${var.trail_name}-logs"
-    }
-  )
+  tags = {
+    Name = "cloudtrail-logs-bucket"
+  }
 }
 
-# Block public access to CloudTrail bucket
+# Block public access to S3 bucket
 resource "aws_s3_bucket_public_access_block" "cloudtrail_logs" {
-  provider = aws.cloudtrail_bucket_region
-  bucket   = aws_s3_bucket.cloudtrail_logs.id
+  bucket = aws_s3_bucket.cloudtrail_logs.id
 
   block_public_acls       = true
   block_public_policy     = true
@@ -180,20 +175,18 @@ resource "aws_s3_bucket_public_access_block" "cloudtrail_logs" {
   restrict_public_buckets = true
 }
 
-# Enable versioning on CloudTrail bucket
+# Enable versioning for audit trail integrity
 resource "aws_s3_bucket_versioning" "cloudtrail_logs" {
-  provider = aws.cloudtrail_bucket_region
-  bucket   = aws_s3_bucket.cloudtrail_logs.id
+  bucket = aws_s3_bucket.cloudtrail_logs.id
 
   versioning_configuration {
     status = "Enabled"
   }
 }
 
-# Enable server-side encryption on CloudTrail bucket
+# Server-side encryption with KMS
 resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail_logs" {
-  provider = aws.cloudtrail_bucket_region
-  bucket   = aws_s3_bucket.cloudtrail_logs.id
+  bucket = aws_s3_bucket.cloudtrail_logs.id
 
   rule {
     apply_server_side_encryption_by_default {
@@ -204,10 +197,28 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail_logs" 
   }
 }
 
-# S3 Bucket Policy for CloudTrail
+# Lifecycle policy for cost optimization (Glacier after 90 days, delete after 7 years)
+resource "aws_s3_bucket_lifecycle_configuration" "cloudtrail_logs" {
+  bucket = aws_s3_bucket.cloudtrail_logs.id
+
+  rule {
+    id     = "transition-to-glacier"
+    status = "Enabled"
+
+    transition {
+      days          = var.glacier_transition_days
+      storage_class = "GLACIER"
+    }
+
+    expiration {
+      days = var.log_retention_days
+    }
+  }
+}
+
+# Deny unencrypted uploads
 resource "aws_s3_bucket_policy" "cloudtrail_logs" {
-  provider = aws.cloudtrail_bucket_region
-  bucket   = aws_s3_bucket.cloudtrail_logs.id
+  bucket = aws_s3_bucket.cloudtrail_logs.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -248,6 +259,18 @@ resource "aws_s3_bucket_policy" "cloudtrail_logs" {
         }
       },
       {
+        Sid    = "DenyWrongKMSKey"
+        Effect = "Deny"
+        Principal = "*"
+        Action   = "s3:PutObject"
+        Resource = "${aws_s3_bucket.cloudtrail_logs.arn}/*"
+        Condition = {
+          StringNotEquals = {
+            "s3:x-amz-server-side-encryption-aws-kms-key-id" = aws_kms_key.cloudtrail.arn
+          }
+        }
+      },
+      {
         Sid    = "DenyInsecureTransport"
         Effect = "Deny"
         Principal = "*"
@@ -266,60 +289,23 @@ resource "aws_s3_bucket_policy" "cloudtrail_logs" {
   })
 }
 
-# S3 Lifecycle policy for cost optimization
-resource "aws_s3_bucket_lifecycle_configuration" "cloudtrail_logs" {
-  provider = aws.cloudtrail_bucket_region
-  bucket   = aws_s3_bucket.cloudtrail_logs.id
-
-  rule {
-    id     = "transition-to-glacier"
-    status = "Enabled"
-
-    transition {
-      days          = var.glacier_transition_days
-      storage_class = "GLACIER"
-    }
-
-    noncurrent_version_transition {
-      noncurrent_days = var.glacier_transition_days
-      storage_class   = "GLACIER"
-    }
-
-    noncurrent_version_expiration {
-      noncurrent_days = var.retention_days
-    }
-  }
-
-  rule {
-    id     = "expire-old-logs"
-    status = "Enabled"
-
-    expiration {
-      days = var.retention_days
-    }
-  }
-}
-
-# CloudWatch Logs Group for CloudTrail
+# CloudWatch Logs Group for CloudTrail Events (CC7.2)
 resource "aws_cloudwatch_log_group" "cloudtrail" {
   count             = var.enable_cloudwatch_logs ? 1 : 0
-  name              = "/aws/cloudtrail/${var.trail_name}"
-  retention_in_days = var.retention_days
+  name              = var.cloudwatch_log_group_name
+  retention_in_days = var.log_retention_days
 
   kms_key_id = "${aws_kms_key.cloudtrail.arn}:*"
 
-  tags = merge(
-    var.tags,
-    {
-      Name = "${var.trail_name}-logs"
-    }
-  )
+  tags = {
+    Name = "cloudtrail-logs"
+  }
 }
 
 # IAM Role for CloudTrail to write to CloudWatch Logs
 resource "aws_iam_role" "cloudtrail_cloudwatch_logs" {
   count = var.enable_cloudwatch_logs ? 1 : 0
-  name  = "${var.trail_name}-cloudwatch-logs-role"
+  name  = "cloudtrail-cloudwatch-logs-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -334,13 +320,15 @@ resource "aws_iam_role" "cloudtrail_cloudwatch_logs" {
     ]
   })
 
-  tags = var.tags
+  tags = {
+    Name = "cloudtrail-cloudwatch-logs-role"
+  }
 }
 
 # IAM Policy for CloudTrail to write to CloudWatch Logs
 resource "aws_iam_role_policy" "cloudtrail_cloudwatch_logs" {
   count = var.enable_cloudwatch_logs ? 1 : 0
-  name  = "${var.trail_name}-cloudwatch-logs-policy"
+  name  = "cloudtrail-cloudwatch-logs-policy"
   role  = aws_iam_role.cloudtrail_cloudwatch_logs[0].id
 
   policy = jsonencode({
@@ -358,33 +346,29 @@ resource "aws_iam_role_policy" "cloudtrail_cloudwatch_logs" {
   })
 }
 
-# CloudTrail Organization Trail (Multi-Region)
+# Get current AWS account ID
+data "aws_caller_identity" "current" {}
+
+# Multi-Region Organization CloudTrail (CC7.2, CC9.2)
 resource "aws_cloudtrail" "organization" {
+  depends_on = [
+    aws_s3_bucket_policy.cloudtrail_logs,
+    aws_iam_role_policy.cloudtrail_cloudwatch_logs
+  ]
+
   name                          = var.trail_name
   s3_bucket_name                = aws_s3_bucket.cloudtrail_logs.id
-  include_global_service_events = true
-  is_multi_region_trail         = true
-  is_organization_trail         = true
+  include_global_service_events = var.include_global_service_events
+  is_multi_region_trail         = var.is_multi_region_trail
+  is_organization_trail         = var.is_organization_trail
   enable_log_file_validation    = var.enable_log_file_validation
   kms_key_id                    = aws_kms_key.cloudtrail.arn
-  depends_on                    = [aws_s3_bucket_policy.cloudtrail_logs]
 
   # CloudWatch Logs integration
-  dynamic "cloud_watch_logs_group_arn" {
-    for_each = var.enable_cloudwatch_logs ? [1] : []
-    content {
-      cloud_watch_logs_group_arn = "${aws_cloudwatch_log_group.cloudtrail[0].arn}:*"
-    }
-  }
+  cloud_watch_logs_group_arn = var.enable_cloudwatch_logs ? "${aws_cloudwatch_log_group.cloudtrail[0].arn}:*" : null
+  cloud_watch_logs_role_arn  = var.enable_cloudwatch_logs ? aws_iam_role.cloudtrail_cloudwatch_logs[0].arn : null
 
-  dynamic "cloud_watch_logs_role_arn" {
-    for_each = var.enable_cloudwatch_logs ? [1] : []
-    content {
-      cloud_watch_logs_role_arn = "${aws_iam_role.cloudtrail_cloudwatch_logs[0].arn}:*"
-    }
-  }
-
-  # Event selectors for comprehensive logging
+  # Event selectors for comprehensive logging (CC7.2)
   event_selector {
     read_write_type           = "All"
     include_management_events = true
@@ -400,76 +384,82 @@ resource "aws_cloudtrail" "organization" {
     }
   }
 
-  # Insights selector for anomaly detection
-  insight_selector {
-    insight_type = "ApiCallRateInsight"
+  # Exclude KMS decrypt events to reduce noise
+  event_selector {
+    read_write_type           = "WriteOnly"
+    include_management_events = true
+
+    exclude_management_event_source {
+      values = ["kms.amazonaws.com"]
+    }
   }
 
-  tags = merge(
-    var.tags,
-    {
-      Name = var.trail_name
-    }
-  )
+  tags = {
+    Name = var.trail_name
+  }
 }
 
-# CloudWatch Alarm for CloudTrail API calls
-resource "aws_cloudwatch_metric_alarm" "cloudtrail_api_calls" {
-  count           = var.enable_cloudwatch_logs ? 1 : 0
-  alarm_name      = "${var.trail_name}-high-api-activity"
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  evaluation_periods  = 1
-  metric_name         = "CloudTrailEventCount"
-  namespace           = "CloudTrailMetrics"
-  period              = 300
-  statistic           = "Sum"
-  threshold           = 100
-  alarm_description   = "Alert when CloudTrail detects high API activity"
-  treat_missing_data  = "notBreaching"
+# CloudWatch Alarm for CloudTrail API calls (CC7.2)
+resource "aws_cloudwatch_log_group" "cloudtrail_alarms" {
+  count             = var.enable_cloudwatch_logs ? 1 : 0
+  name              = "/aws/cloudtrail/alarms"
+  retention_in_days = var.log_retention_days
 
-  tags = var.tags
+  kms_key_id = "${aws_kms_key.cloudtrail.arn}:*"
+
+  tags = {
+    Name = "cloudtrail-alarms"
+  }
+}
+
+# Metric filter for unauthorized API calls
+resource "aws_cloudwatch_log_metric_filter" "unauthorized_api_calls" {
+  count          = var.enable_cloudwatch_logs ? 1 : 0
+  name           = "UnauthorizedAPICallsMetricFilter"
+  log_group_name = aws_cloudwatch_log_group.cloudtrail[0].name
+  filter_pattern = "{ ($.errorCode = \"*UnauthorizedOperation\") || ($.errorCode = \"AccessDenied*\") }"
+
+  metric_transformation {
+    name      = "UnauthorizedAPICallsCount"
+    namespace = "CloudTrailMetrics"
+    value     = "1"
+  }
+}
+
+# Alarm for unauthorized API calls
+resource "aws_cloudwatch_metric_alarm" "unauthorized_api_calls" {
+  count               = var.enable_cloudwatch_logs ? 1 : 0
+  alarm_name          = "cloudtrail-unauthorized-api-calls"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "UnauthorizedAPICallsCount"
+  namespace           = "CloudTrailMetrics"
+  period              = "300"
+  statistic           = "Sum"
+  threshold           = "1"
+  alarm_description   = "Alert when unauthorized API calls are detected"
+  treat_missing_data  = "notBreaching"
 }
 
 # Outputs
+output "cloudtrail_id" {
+  description = "CloudTrail ID"
+  value       = aws_cloudtrail.organization.id
+}
+
 output "cloudtrail_arn" {
-  description = "ARN of the CloudTrail trail"
+  description = "CloudTrail ARN"
   value       = aws_cloudtrail.organization.arn
 }
 
-output "cloudtrail_home_region" {
-  description = "Home region of the CloudTrail trail"
-  value       = aws_cloudtrail.organization.home_region
-}
-
 output "s3_bucket_name" {
-  description = "Name of the S3 bucket storing CloudTrail logs"
+  description = "S3 bucket name for CloudTrail logs"
   value       = aws_s3_bucket.cloudtrail_logs.id
 }
 
 output "s3_bucket_arn" {
-  description = "ARN of the S3 bucket storing CloudTrail logs"
+  description = "S3 bucket ARN for CloudTrail logs"
   value       = aws_s3_bucket.cloudtrail_logs.arn
 }
 
-output "kms_key_id" {
-  description = "ID of the KMS key used for CloudTrail encryption"
-  value       = aws_kms_key.cloudtrail.id
-}
-
-output "kms_key_arn" {
-  description = "ARN of the KMS key used for CloudTrail encryption"
-  value       = aws_kms_key.cloudtrail.arn
-}
-
-output "cloudwatch_log_group_name" {
-  description = "Name of the CloudWatch Logs group for CloudTrail"
-  value       = var.enable_cloudwatch_logs ? aws_cloudwatch_log_group.cloudtrail[0].name : null
-}
-
-output "cloudwatch_log_group_arn" {
-  description = "ARN of the CloudWatch Logs group for CloudTrail"
-  value       = var.enable_cloudwatch_logs ? aws_cloudwatch_log_group.cloudtrail[0].arn : null
-}
-
-output "cloudtrail_is_organization_trail" {
-  description =
+output "kms_

@@ -1,6 +1,6 @@
 # CloudWatch Alarms for SOC 2 Type II Compliance
-# Implements monitoring for security events per CIS AWS Foundations Benchmark
-# Provides real-time alerting for unauthorized activities and configuration changes
+# Implements monitoring for critical security events per CIS AWS Foundations Benchmark
+# Sends alerts to SNS topic for immediate notification
 
 terraform {
   required_version = ">= 1.5"
@@ -14,11 +14,19 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
+
+  default_tags {
+    tags = {
+      ManagedBy  = "CARL"
+      Compliance = "SOC2-Type-II"
+      CreatedAt  = timestamp()
+    }
+  }
 }
 
 # Variables
 variable "aws_region" {
-  description = "AWS region for resources"
+  description = "AWS region"
   type        = string
   default     = "us-east-1"
 }
@@ -36,345 +44,311 @@ variable "sns_topic_name" {
 }
 
 variable "log_retention_days" {
-  description = "CloudWatch Log retention in days (SOC 2 requires 7 years)"
+  description = "CloudWatch Logs retention period in days (SOC 2 requires 7 years minimum)"
   type        = number
   default     = 2555
 }
 
-variable "environment" {
-  description = "Environment name"
+variable "alarm_actions_enabled" {
+  description = "Enable alarm actions"
+  type        = bool
+  default     = true
+}
+
+variable "treat_missing_data" {
+  description = "How to treat missing data"
   type        = string
-  default     = "production"
+  default     = "notBreaching"
 }
 
-variable "project_name" {
-  description = "Project name for tagging"
-  type        = string
-  default     = "security-monitoring"
+# Data source for existing SNS topic
+data "aws_sns_topic" "security_alerts" {
+  name = var.sns_topic_name
 }
 
-variable "email_endpoints" {
-  description = "Email addresses for SNS subscriptions"
-  type        = list(string)
-  default     = []
-}
-
-# Data source for existing CloudTrail log group
-data "aws_cloudwatch_log_group" "cloudtrail" {
-  name = var.cloudtrail_log_group_name
-}
-
-# SNS Topic for security alerts
-resource "aws_sns_topic" "security_alerts" {
-  name              = var.sns_topic_name
-  kms_master_key_id = aws_kms_key.sns.id
+# Metric Filter: Root Account Usage (CIS 3.3)
+resource "aws_cloudwatch_log_group" "cloudtrail" {
+  name              = var.cloudtrail_log_group_name
+  retention_in_days = var.log_retention_days
 
   tags = {
-    Name        = var.sns_topic_name
-    Environment = var.environment
-    ManagedBy   = "CARL"
-    Compliance  = "SOC2-TypeII"
+    Name        = "cloudtrail-logs"
+    Description = "CloudTrail logs for SOC 2 compliance"
   }
 }
 
-# KMS Key for SNS encryption
-resource "aws_kms_key" "sns" {
-  description             = "KMS key for SNS topic encryption"
-  deletion_window_in_days = 30
-  enable_key_rotation     = true
-
-  tags = {
-    Name        = "${var.project_name}-sns-key"
-    Environment = var.environment
-    ManagedBy   = "CARL"
-    Compliance  = "SOC2-TypeII"
-  }
-}
-
-resource "aws_kms_alias" "sns" {
-  name          = "alias/${var.project_name}-sns"
-  target_key_id = aws_kms_key.sns.key_id
-}
-
-# SNS Topic Policy for CloudWatch Logs
-resource "aws_sns_topic_policy" "security_alerts" {
-  arn = aws_sns_topic.security_alerts.arn
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Service = "logs.amazonaws.com"
-        }
-        Action   = "SNS:Publish"
-        Resource = aws_sns_topic.security_alerts.arn
-        Condition = {
-          StringEquals = {
-            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
-          }
-        }
-      }
-    ]
-  })
-}
-
-# Email subscriptions for SNS topic
-resource "aws_sns_topic_subscription" "email" {
-  for_each = toset(var.email_endpoints)
-
-  topic_arn            = aws_sns_topic.security_alerts.arn
-  protocol             = "email"
-  endpoint             = each.value
-  filter_policy_scope  = "MessageAttributes"
-}
-
-# Data source for current AWS account
-data "aws_caller_identity" "current" {}
-
-# ============================================================================
-# METRIC FILTERS AND ALARMS - CIS AWS Foundations Benchmark Compliance
-# ============================================================================
-
-# 1. Root Account Usage (CIS 3.3)
 resource "aws_cloudwatch_log_metric_filter" "root_account_usage" {
-  name           = "RootAccountUsageFilter"
-  log_group_name = data.aws_cloudwatch_log_group.cloudtrail.name
+  name           = "RootAccountUsageMetricFilter"
+  log_group_name = aws_cloudwatch_log_group.cloudtrail.name
   filter_pattern = "{ $.userIdentity.type = \"Root\" && $.userIdentity.invokedBy NOT EXISTS && $.eventType != \"AwsServiceEvent\" }"
 
   metric_transformation {
-    name      = "RootAccountUsageMetric"
+    name      = "RootAccountUsageCount"
     namespace = "CloudTrailMetrics"
     value     = "1"
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "root_account_usage" {
+resource "aws_cloudwatch_alarm" "root_account_usage" {
   alarm_name          = "root-account-usage"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1
-  metric_name         = "RootAccountUsageMetric"
+  metric_name         = "RootAccountUsageCount"
   namespace           = "CloudTrailMetrics"
   period              = 300
   statistic           = "Sum"
   threshold           = 1
   alarm_description   = "Alert when root account is used - CIS 3.3"
-  alarm_actions       = [aws_sns_topic.security_alerts.arn]
-  treat_missing_data  = "notBreaching"
+  treat_missing_data  = var.treat_missing_data
+  alarm_actions       = var.alarm_actions_enabled ? [data.aws_sns_topic.security_alerts.arn] : []
 
   tags = {
-    Name        = "root-account-usage"
-    Environment = var.environment
-    ManagedBy   = "CARL"
-    Compliance  = "SOC2-TypeII"
-    CIS         = "3.3"
+    CISControl = "3.3"
+    SOC2       = "CC7.1"
   }
 }
 
-# 2. Unauthorized API Calls (CIS 3.1)
+# Metric Filter: Unauthorized API Calls (CIS 3.1)
 resource "aws_cloudwatch_log_metric_filter" "unauthorized_api_calls" {
-  name           = "UnauthorizedAPICallsFilter"
-  log_group_name = data.aws_cloudwatch_log_group.cloudtrail.name
+  name           = "UnauthorizedAPICallsMetricFilter"
+  log_group_name = aws_cloudwatch_log_group.cloudtrail.name
   filter_pattern = "{ ($.errorCode = \"*UnauthorizedOperation\") || ($.errorCode = \"AccessDenied*\") }"
 
   metric_transformation {
-    name      = "UnauthorizedAPICallsMetric"
+    name      = "UnauthorizedAPICallsCount"
     namespace = "CloudTrailMetrics"
     value     = "1"
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "unauthorized_api_calls" {
+resource "aws_cloudwatch_alarm" "unauthorized_api_calls" {
   alarm_name          = "unauthorized-api-calls"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1
-  metric_name         = "UnauthorizedAPICallsMetric"
+  metric_name         = "UnauthorizedAPICallsCount"
   namespace           = "CloudTrailMetrics"
   period              = 300
   statistic           = "Sum"
-  threshold           = 5
+  threshold           = 1
   alarm_description   = "Alert on unauthorized API calls - CIS 3.1"
-  alarm_actions       = [aws_sns_topic.security_alerts.arn]
-  treat_missing_data  = "notBreaching"
+  treat_missing_data  = var.treat_missing_data
+  alarm_actions       = var.alarm_actions_enabled ? [data.aws_sns_topic.security_alerts.arn] : []
 
   tags = {
-    Name        = "unauthorized-api-calls"
-    Environment = var.environment
-    ManagedBy   = "CARL"
-    Compliance  = "SOC2-TypeII"
-    CIS         = "3.1"
+    CISControl = "3.1"
+    SOC2       = "CC7.2"
   }
 }
 
-# 3. Console Login Without MFA (CIS 3.2)
+# Metric Filter: Console Login Without MFA (CIS 3.2)
 resource "aws_cloudwatch_log_metric_filter" "console_login_without_mfa" {
-  name           = "ConsoleLoginWithoutMFAFilter"
-  log_group_name = data.aws_cloudwatch_log_group.cloudtrail.name
+  name           = "ConsoleLoginWithoutMFAMetricFilter"
+  log_group_name = aws_cloudwatch_log_group.cloudtrail.name
   filter_pattern = "{ ($.eventName = \"ConsoleLogin\") && ($.additionalEventData.MFAUsed != \"true\") }"
 
   metric_transformation {
-    name      = "ConsoleLoginWithoutMFAMetric"
+    name      = "ConsoleLoginWithoutMFACount"
     namespace = "CloudTrailMetrics"
     value     = "1"
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "console_login_without_mfa" {
+resource "aws_cloudwatch_alarm" "console_login_without_mfa" {
   alarm_name          = "console-login-without-mfa"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1
-  metric_name         = "ConsoleLoginWithoutMFAMetric"
+  metric_name         = "ConsoleLoginWithoutMFACount"
   namespace           = "CloudTrailMetrics"
   period              = 300
   statistic           = "Sum"
   threshold           = 1
   alarm_description   = "Alert on console login without MFA - CIS 3.2"
-  alarm_actions       = [aws_sns_topic.security_alerts.arn]
-  treat_missing_data  = "notBreaching"
+  treat_missing_data  = var.treat_missing_data
+  alarm_actions       = var.alarm_actions_enabled ? [data.aws_sns_topic.security_alerts.arn] : []
 
   tags = {
-    Name        = "console-login-without-mfa"
-    Environment = var.environment
-    ManagedBy   = "CARL"
-    Compliance  = "SOC2-TypeII"
-    CIS         = "3.2"
+    CISControl = "3.2"
+    SOC2       = "CC6.1"
   }
 }
 
-# 4. IAM Policy Changes (CIS 3.4)
+# Metric Filter: IAM Policy Changes (CIS 3.4)
 resource "aws_cloudwatch_log_metric_filter" "iam_policy_changes" {
-  name           = "IAMPolicyChangesFilter"
-  log_group_name = data.aws_cloudwatch_log_group.cloudtrail.name
-  filter_pattern = "{ ($.eventName=DeleteGroupPolicy) || ($.eventName=DeleteRolePolicy) || ($.eventName=DeleteUserPolicy) || ($.eventName=PutGroupPolicy) || ($.eventName=PutRolePolicy) || ($.eventName=PutUserPolicy) || ($.eventName=CreatePolicy) || ($.eventName=DeletePolicy) || ($.eventName=CreatePolicyVersion) || ($.eventName=DeletePolicyVersion) || ($.eventName=AttachRolePolicy) || ($.eventName=DetachRolePolicy) || ($.eventName=AttachUserPolicy) || ($.eventName=DetachUserPolicy) || ($.eventName=AttachGroupPolicy) || ($.eventName=DetachGroupPolicy) }"
+  name           = "IAMPolicyChangesMetricFilter"
+  log_group_name = aws_cloudwatch_log_group.cloudtrail.name
+  filter_pattern = "{ ($.eventName = DeleteGroupPolicy) || ($.eventName = DeleteRolePolicy) || ($.eventName = DeleteUserPolicy) || ($.eventName = PutGroupPolicy) || ($.eventName = PutRolePolicy) || ($.eventName = PutUserPolicy) || ($.eventName = CreatePolicy) || ($.eventName = DeletePolicy) || ($.eventName = CreatePolicyVersion) || ($.eventName = DeletePolicyVersion) || ($.eventName = AttachRolePolicy) || ($.eventName = DetachRolePolicy) || ($.eventName = AttachUserPolicy) || ($.eventName = DetachUserPolicy) || ($.eventName = AttachGroupPolicy) || ($.eventName = DetachGroupPolicy) }"
 
   metric_transformation {
-    name      = "IAMPolicyChangesMetric"
+    name      = "IAMPolicyChangesCount"
     namespace = "CloudTrailMetrics"
     value     = "1"
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "iam_policy_changes" {
+resource "aws_cloudwatch_alarm" "iam_policy_changes" {
   alarm_name          = "iam-policy-changes"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1
-  metric_name         = "IAMPolicyChangesMetric"
+  metric_name         = "IAMPolicyChangesCount"
   namespace           = "CloudTrailMetrics"
   period              = 300
   statistic           = "Sum"
   threshold           = 1
   alarm_description   = "Alert on IAM policy changes - CIS 3.4"
-  alarm_actions       = [aws_sns_topic.security_alerts.arn]
-  treat_missing_data  = "notBreaching"
+  treat_missing_data  = var.treat_missing_data
+  alarm_actions       = var.alarm_actions_enabled ? [data.aws_sns_topic.security_alerts.arn] : []
 
   tags = {
-    Name        = "iam-policy-changes"
-    Environment = var.environment
-    ManagedBy   = "CARL"
-    Compliance  = "SOC2-TypeII"
-    CIS         = "3.4"
+    CISControl = "3.4"
+    SOC2       = "CC6.2"
   }
 }
 
-# 5. CloudTrail Configuration Changes (CIS 3.5)
+# Metric Filter: CloudTrail Configuration Changes (CIS 3.5)
 resource "aws_cloudwatch_log_metric_filter" "cloudtrail_changes" {
-  name           = "CloudTrailChangesFilter"
-  log_group_name = data.aws_cloudwatch_log_group.cloudtrail.name
-  filter_pattern = "{ ($.eventName=CreateTrail) || ($.eventName=UpdateTrail) || ($.eventName=DeleteTrail) || ($.eventName=StartLogging) || ($.eventName=StopLogging) }"
+  name           = "CloudTrailChangesMetricFilter"
+  log_group_name = aws_cloudwatch_log_group.cloudtrail.name
+  filter_pattern = "{ ($.eventName = CreateTrail) || ($.eventName = UpdateTrail) || ($.eventName = DeleteTrail) || ($.eventName = StartLogging) || ($.eventName = StopLogging) }"
 
   metric_transformation {
-    name      = "CloudTrailChangesMetric"
+    name      = "CloudTrailChangesCount"
     namespace = "CloudTrailMetrics"
     value     = "1"
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "cloudtrail_changes" {
+resource "aws_cloudwatch_alarm" "cloudtrail_changes" {
   alarm_name          = "cloudtrail-changes"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1
-  metric_name         = "CloudTrailChangesMetric"
+  metric_name         = "CloudTrailChangesCount"
   namespace           = "CloudTrailMetrics"
   period              = 300
   statistic           = "Sum"
   threshold           = 1
   alarm_description   = "Alert on CloudTrail configuration changes - CIS 3.5"
-  alarm_actions       = [aws_sns_topic.security_alerts.arn]
-  treat_missing_data  = "notBreaching"
+  treat_missing_data  = var.treat_missing_data
+  alarm_actions       = var.alarm_actions_enabled ? [data.aws_sns_topic.security_alerts.arn] : []
 
   tags = {
-    Name        = "cloudtrail-changes"
-    Environment = var.environment
-    ManagedBy   = "CARL"
-    Compliance  = "SOC2-TypeII"
-    CIS         = "3.5"
+    CISControl = "3.5"
+    SOC2       = "CC7.1"
   }
 }
 
-# 6. Security Group Changes (CIS 3.10)
+# Metric Filter: Security Group Changes (CIS 3.10)
 resource "aws_cloudwatch_log_metric_filter" "security_group_changes" {
-  name           = "SecurityGroupChangesFilter"
-  log_group_name = data.aws_cloudwatch_log_group.cloudtrail.name
-  filter_pattern = "{ ($.eventName=AuthorizeSecurityGroupIngress) || ($.eventName=AuthorizeSecurityGroupEgress) || ($.eventName=RevokeSecurityGroupIngress) || ($.eventName=RevokeSecurityGroupEgress) || ($.eventName=CreateSecurityGroup) || ($.eventName=DeleteSecurityGroup) }"
+  name           = "SecurityGroupChangesMetricFilter"
+  log_group_name = aws_cloudwatch_log_group.cloudtrail.name
+  filter_pattern = "{ ($.eventName = AuthorizeSecurityGroupIngress) || ($.eventName = AuthorizeSecurityGroupEgress) || ($.eventName = RevokeSecurityGroupIngress) || ($.eventName = RevokeSecurityGroupEgress) || ($.eventName = CreateSecurityGroup) || ($.eventName = DeleteSecurityGroup) }"
 
   metric_transformation {
-    name      = "SecurityGroupChangesMetric"
+    name      = "SecurityGroupChangesCount"
     namespace = "CloudTrailMetrics"
     value     = "1"
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "security_group_changes" {
+resource "aws_cloudwatch_alarm" "security_group_changes" {
   alarm_name          = "security-group-changes"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1
-  metric_name         = "SecurityGroupChangesMetric"
+  metric_name         = "SecurityGroupChangesCount"
   namespace           = "CloudTrailMetrics"
   period              = 300
   statistic           = "Sum"
   threshold           = 1
   alarm_description   = "Alert on security group changes - CIS 3.10"
-  alarm_actions       = [aws_sns_topic.security_alerts.arn]
-  treat_missing_data  = "notBreaching"
+  treat_missing_data  = var.treat_missing_data
+  alarm_actions       = var.alarm_actions_enabled ? [data.aws_sns_topic.security_alerts.arn] : []
 
   tags = {
-    Name        = "security-group-changes"
-    Environment = var.environment
-    ManagedBy   = "CARL"
-    Compliance  = "SOC2-TypeII"
-    CIS         = "3.10"
+    CISControl = "3.10"
+    SOC2       = "CC6.1"
   }
 }
 
-# 7. Network ACL Changes (CIS 3.11)
+# Metric Filter: Network ACL Changes (CIS 3.11)
 resource "aws_cloudwatch_log_metric_filter" "nacl_changes" {
-  name           = "NACLChangesFilter"
-  log_group_name = data.aws_cloudwatch_log_group.cloudtrail.name
-  filter_pattern = "{ ($.eventName=CreateNetworkAcl) || ($.eventName=CreateNetworkAclEntry) || ($.eventName=DeleteNetworkAcl) || ($.eventName=DeleteNetworkAclEntry) || ($.eventName=ReplaceNetworkAclEntry) || ($.eventName=ReplaceNetworkAclAssociation) }"
+  name           = "NACLChangesMetricFilter"
+  log_group_name = aws_cloudwatch_log_group.cloudtrail.name
+  filter_pattern = "{ ($.eventName = CreateNetworkAcl) || ($.eventName = CreateNetworkAclEntry) || ($.eventName = DeleteNetworkAcl) || ($.eventName = DeleteNetworkAclEntry) || ($.eventName = ReplaceNetworkAclEntry) || ($.eventName = ReplaceNetworkAclAssociation) }"
 
   metric_transformation {
-    name      = "NACLChangesMetric"
+    name      = "NACLChangesCount"
     namespace = "CloudTrailMetrics"
     value     = "1"
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "nacl_changes" {
+resource "aws_cloudwatch_alarm" "nacl_changes" {
   alarm_name          = "nacl-changes"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1
-  metric_name         = "NACLChangesMetric"
+  metric_name         = "NACLChangesCount"
   namespace           = "CloudTrailMetrics"
   period              = 300
   statistic           = "Sum"
   threshold           = 1
-  alarm_description   = "Alert on network ACL changes - CIS 3.11"
-  alarm_actions       = [aws_sns_topic.security_alerts.arn]
-  treat_missing_data  = "notBreaching"
+  alarm_description   = "Alert on Network ACL changes - CIS 3.11"
+  treat_missing_data  = var.treat_missing_data
+  alarm_actions       = var.alarm_actions_enabled ? [data.aws_sns_topic.security_alerts.arn] : []
 
   tags = {
-    Name        = "nacl-changes"
-    Environment = var.environment
-    ManagedBy   = "CARL"
-    Compliance
+    CISControl = "3.11"
+    SOC2       = "CC6.1"
+  }
+}
+
+# Metric Filter: KMS Key Changes (CIS 3.7)
+resource "aws_cloudwatch_log_metric_filter" "kms_key_changes" {
+  name           = "KMSKeyChangesMetricFilter"
+  log_group_name = aws_cloudwatch_log_group.cloudtrail.name
+  filter_pattern = "{ ($.eventName = DisableKey) || ($.eventName = ScheduleKeyDeletion) || ($.eventName = DeleteKey) }"
+
+  metric_transformation {
+    name      = "KMSKeyChangesCount"
+    namespace = "CloudTrailMetrics"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_alarm" "kms_key_changes" {
+  alarm_name          = "kms-key-changes"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "KMSKeyChangesCount"
+  namespace           = "CloudTrailMetrics"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 1
+  alarm_description   = "Alert on KMS key disabled or deleted - CIS 3.7"
+  treat_missing_data  = var.treat_missing_data
+  alarm_actions       = var.alarm_actions_enabled ? [data.aws_sns_topic.security_alerts.arn] : []
+
+  tags = {
+    CISControl = "3.7"
+    SOC2       = "CC6.1"
+  }
+}
+
+# Outputs
+output "cloudtrail_log_group_name" {
+  description = "CloudTrail CloudWatch Log Group name"
+  value       = aws_cloudwatch_log_group.cloudtrail.name
+}
+
+output "cloudtrail_log_group_arn" {
+  description = "CloudTrail CloudWatch Log Group ARN"
+  value       = aws_cloudwatch_log_group.cloudtrail.arn
+}
+
+output "alarm_names" {
+  description = "List of all CloudWatch alarm names"
+  value = [
+    aws_cloudwatch_alarm.root_account_usage.alarm_name,
+    aws_cloudwatch_alarm.unauthorized_api_calls.alarm_name,
+    aws_cloudwatch_alarm.console_login_without_mfa.alarm_name,
+    aws_cloudwatch_alarm.iam_policy_changes.alarm_name,
+    aws_cloudwatch_alarm.cloudtrail_changes.alarm_name,
+    aws_cloudwatch_alarm.security_group_changes

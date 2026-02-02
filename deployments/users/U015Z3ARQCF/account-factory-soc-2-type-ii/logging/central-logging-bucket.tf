@@ -1,6 +1,6 @@
 # Central Logging Bucket for SOC 2 Type II Compliance
-# Implements CC7.2 (Logging and Monitoring) and A1.3 (Data Protection)
-# Provides centralized audit trail with encryption, versioning, and lifecycle management
+# Implements CC7.2 (Logging), A1.3 (Data Protection)
+# Features: KMS encryption, versioning, lifecycle policies, access logging, 7-year retention
 
 terraform {
   required_version = ">= 1.5"
@@ -58,6 +58,12 @@ variable "transition_to_glacier_days" {
   default     = 365
 }
 
+variable "enable_versioning" {
+  description = "Enable S3 versioning for data integrity"
+  type        = bool
+  default     = true
+}
+
 variable "enable_access_logging" {
   description = "Enable S3 access logging"
   type        = bool
@@ -65,7 +71,7 @@ variable "enable_access_logging" {
 }
 
 variable "allowed_services" {
-  description = "AWS services allowed to write to the bucket"
+  description = "AWS services allowed to write to logging bucket"
   type        = list(string)
   default     = ["cloudtrail.amazonaws.com", "config.amazonaws.com"]
 }
@@ -82,10 +88,8 @@ variable "tags" {
 # Data source for current AWS account
 data "aws_caller_identity" "current" {}
 
-data "aws_region" "current" {}
-
 # KMS Key for S3 encryption
-resource "aws_kms_key" "central_logs" {
+resource "aws_kms_key" "central_logging" {
   description             = "KMS key for central logging bucket encryption (SOC 2 CC7.2)"
   deletion_window_in_days = 30
   enable_key_rotation     = true
@@ -93,19 +97,19 @@ resource "aws_kms_key" "central_logs" {
   tags = merge(
     var.tags,
     {
-      Name = "${var.organization_name}-central-logs-key"
+      Name = "${var.organization_name}-central-logging-key"
     }
   )
 }
 
-resource "aws_kms_alias" "central_logs" {
-  name          = "alias/${var.organization_name}-central-logs"
-  target_key_id = aws_kms_key.central_logs.key_id
+resource "aws_kms_alias" "central_logging" {
+  name          = "alias/${var.organization_name}-central-logging"
+  target_key_id = aws_kms_key.central_logging.key_id
 }
 
 # KMS Key Policy for CloudTrail and Config
-resource "aws_kms_key_policy" "central_logs" {
-  key_id = aws_kms_key.central_logs.id
+resource "aws_kms_key_policy" "central_logging" {
+  key_id = aws_kms_key.central_logging.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -152,21 +156,21 @@ resource "aws_kms_key_policy" "central_logs" {
   })
 }
 
-# Access logging bucket (separate bucket for S3 access logs)
-resource "aws_s3_bucket" "access_logs" {
+# Access Logging Bucket (separate bucket for S3 access logs)
+resource "aws_s3_bucket" "access_logging" {
   bucket = "${var.organization_name}-${var.bucket_name_suffix}-access-logs-${data.aws_caller_identity.current.account_id}"
 
   tags = merge(
     var.tags,
     {
-      Name = "${var.organization_name}-central-logs-access-logs"
+      Name = "${var.organization_name}-central-logging-access-logs"
     }
   )
 }
 
-# Block public access for access logs bucket
-resource "aws_s3_bucket_public_access_block" "access_logs" {
-  bucket = aws_s3_bucket.access_logs.id
+# Block public access on access logging bucket
+resource "aws_s3_bucket_public_access_block" "access_logging" {
+  bucket = aws_s3_bucket.access_logging.id
 
   block_public_acls       = true
   block_public_policy     = true
@@ -174,31 +178,31 @@ resource "aws_s3_bucket_public_access_block" "access_logs" {
   restrict_public_buckets = true
 }
 
-# Encryption for access logs bucket
-resource "aws_s3_bucket_server_side_encryption_configuration" "access_logs" {
-  bucket = aws_s3_bucket.access_logs.id
+# Encryption for access logging bucket
+resource "aws_s3_bucket_server_side_encryption_configuration" "access_logging" {
+  bucket = aws_s3_bucket.access_logging.id
 
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.central_logs.arn
+      kms_master_key_id = aws_kms_key.central_logging.arn
     }
     bucket_key_enabled = true
   }
 }
 
-# Versioning for access logs bucket
-resource "aws_s3_bucket_versioning" "access_logs" {
-  bucket = aws_s3_bucket.access_logs.id
+# Versioning for access logging bucket
+resource "aws_s3_bucket_versioning" "access_logging" {
+  bucket = aws_s3_bucket.access_logging.id
 
   versioning_configuration {
     status = "Enabled"
   }
 }
 
-# Lifecycle policy for access logs bucket
-resource "aws_s3_bucket_lifecycle_configuration" "access_logs" {
-  bucket = aws_s3_bucket.access_logs.id
+# Lifecycle policy for access logging bucket
+resource "aws_s3_bucket_lifecycle_configuration" "access_logging" {
+  bucket = aws_s3_bucket.access_logging.id
 
   rule {
     id     = "transition-to-ia"
@@ -230,21 +234,21 @@ resource "aws_s3_bucket_lifecycle_configuration" "access_logs" {
   }
 }
 
-# Central logging bucket
-resource "aws_s3_bucket" "central_logs" {
+# Central Logging Bucket
+resource "aws_s3_bucket" "central_logging" {
   bucket = "${var.organization_name}-${var.bucket_name_suffix}-${data.aws_caller_identity.current.account_id}"
 
   tags = merge(
     var.tags,
     {
-      Name = "${var.organization_name}-central-logs"
+      Name = "${var.organization_name}-central-logging"
     }
   )
 }
 
 # Block all public access (SOC 2 A1.3)
-resource "aws_s3_bucket_public_access_block" "central_logs" {
-  bucket = aws_s3_bucket.central_logs.id
+resource "aws_s3_bucket_public_access_block" "central_logging" {
+  bucket = aws_s3_bucket.central_logging.id
 
   block_public_acls       = true
   block_public_policy     = true
@@ -253,38 +257,40 @@ resource "aws_s3_bucket_public_access_block" "central_logs" {
 }
 
 # Enable versioning for data integrity (SOC 2 CC7.2)
-resource "aws_s3_bucket_versioning" "central_logs" {
-  bucket = aws_s3_bucket.central_logs.id
+resource "aws_s3_bucket_versioning" "central_logging" {
+  bucket = aws_s3_bucket.central_logging.id
 
   versioning_configuration {
-    status = "Enabled"
+    status = var.enable_versioning ? "Enabled" : "Suspended"
   }
 }
 
 # Server-side encryption with KMS (SOC 2 CC7.2)
-resource "aws_s3_bucket_server_side_encryption_configuration" "central_logs" {
-  bucket = aws_s3_bucket.central_logs.id
+resource "aws_s3_bucket_server_side_encryption_configuration" "central_logging" {
+  bucket = aws_s3_bucket.central_logging.id
 
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.central_logs.arn
+      kms_master_key_id = aws_kms_key.central_logging.arn
     }
     bucket_key_enabled = true
   }
 }
 
 # Enable access logging (SOC 2 CC7.2)
-resource "aws_s3_bucket_logging" "central_logs" {
-  bucket = aws_s3_bucket.central_logs.id
+resource "aws_s3_bucket_logging" "central_logging" {
+  count = var.enable_access_logging ? 1 : 0
 
-  target_bucket = aws_s3_bucket.access_logs.id
-  target_prefix = "central-logs-access/"
+  bucket = aws_s3_bucket.central_logging.id
+
+  target_bucket = aws_s3_bucket.access_logging.id
+  target_prefix = "central-logging-access-logs/"
 }
 
-# Lifecycle configuration (SOC 2 CC7.2)
-resource "aws_s3_bucket_lifecycle_configuration" "central_logs" {
-  bucket = aws_s3_bucket.central_logs.id
+# Lifecycle configuration (SOC 2 A1.3 - data retention)
+resource "aws_s3_bucket_lifecycle_configuration" "central_logging" {
+  bucket = aws_s3_bucket.central_logging.id
 
   rule {
     id     = "transition-to-ia"
@@ -317,8 +323,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "central_logs" {
 }
 
 # Bucket policy allowing CloudTrail and Config to write logs
-resource "aws_s3_bucket_policy" "central_logs" {
-  bucket = aws_s3_bucket.central_logs.id
+resource "aws_s3_bucket_policy" "central_logging" {
+  bucket = aws_s3_bucket.central_logging.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -328,7 +334,7 @@ resource "aws_s3_bucket_policy" "central_logs" {
         Effect = "Deny"
         Principal = "*"
         Action = "s3:PutObject"
-        Resource = "${aws_s3_bucket.central_logs.arn}/*"
+        Resource = "${aws_s3_bucket.central_logging.arn}/*"
         Condition = {
           StringNotEquals = {
             "s3:x-amz-server-side-encryption" = "aws:kms"
@@ -336,13 +342,25 @@ resource "aws_s3_bucket_policy" "central_logs" {
         }
       },
       {
-        Sid    = "DenyInsecureTransport"
+        Sid    = "DenyIncorrectKMSKey"
+        Effect = "Deny"
+        Principal = "*"
+        Action = "s3:PutObject"
+        Resource = "${aws_s3_bucket.central_logging.arn}/*"
+        Condition = {
+          StringNotEquals = {
+            "s3:x-amz-server-side-encryption-aws-kms-key-id" = aws_kms_key.central_logging.arn
+          }
+        }
+      },
+      {
+        Sid    = "DenyUnencryptedTransport"
         Effect = "Deny"
         Principal = "*"
         Action = "s3:*"
         Resource = [
-          aws_s3_bucket.central_logs.arn,
-          "${aws_s3_bucket.central_logs.arn}/*"
+          aws_s3_bucket.central_logging.arn,
+          "${aws_s3_bucket.central_logging.arn}/*"
         ]
         Condition = {
           Bool = {
@@ -351,22 +369,13 @@ resource "aws_s3_bucket_policy" "central_logs" {
         }
       },
       {
-        Sid    = "AllowCloudTrailAcl"
-        Effect = "Allow"
-        Principal = {
-          Service = "cloudtrail.amazonaws.com"
-        }
-        Action   = "s3:GetBucketAcl"
-        Resource = aws_s3_bucket.central_logs.arn
-      },
-      {
         Sid    = "AllowCloudTrailWrite"
         Effect = "Allow"
         Principal = {
           Service = "cloudtrail.amazonaws.com"
         }
         Action   = "s3:PutObject"
-        Resource = "${aws_s3_bucket.central_logs.arn}/*"
+        Resource = "${aws_s3_bucket.central_logging.arn}/*"
         Condition = {
           StringEquals = {
             "s3:x-amz-acl" = "bucket-owner-full-control"
@@ -374,13 +383,13 @@ resource "aws_s3_bucket_policy" "central_logs" {
         }
       },
       {
-        Sid    = "AllowConfigAcl"
+        Sid    = "AllowCloudTrailGetBucketVersioning"
         Effect = "Allow"
         Principal = {
-          Service = "config.amazonaws.com"
+          Service = "cloudtrail.amazonaws.com"
         }
-        Action   = "s3:GetBucketAcl"
-        Resource = aws_s3_bucket.central_logs.arn
+        Action   = "s3:GetBucketVersioning"
+        Resource = aws_s3_bucket.central_logging.arn
       },
       {
         Sid    = "AllowConfigWrite"
@@ -389,10 +398,45 @@ resource "aws_s3_bucket_policy" "central_logs" {
           Service = "config.amazonaws.com"
         }
         Action   = "s3:PutObject"
-        Resource = "${aws_s3_bucket.central_logs.arn}/*"
+        Resource = "${aws_s3_bucket.central_logging.arn}/*"
         Condition = {
           StringEquals = {
             "s3:x-amz-acl" = "bucket-owner-full-control"
+          }
+        }
+      },
+      {
+        Sid    = "AllowConfigGetBucketVersioning"
+        Effect = "Allow"
+        Principal = {
+          Service = "config.amazonaws.com"
+        }
+        Action   = "s3:GetBucketVersioning"
+        Resource = aws_s3_bucket.central_logging.arn
+      }
+    ]
+  })
+}
+
+# Block public access on access logging bucket policy
+resource "aws_s3_bucket_policy" "access_logging" {
+  bucket = aws_s3_bucket.access_logging.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DenyUnencryptedTransport"
+        Effect = "Deny"
+        Principal = "*"
+        Action = "s3:*"
+        Resource = [
+          aws_s3_bucket.access_logging.arn,
+          "${aws_s3_bucket.access_logging.arn}/*"
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
           }
         }
       }
@@ -400,55 +444,43 @@ resource "aws_s3_bucket_policy" "central_logs" {
   })
 }
 
-# Block object deletion (MFA delete protection)
-resource "aws_s3_bucket_object_lock_configuration" "central_logs" {
-  bucket = aws_s3_bucket.central_logs.id
-
-  rule {
-    default_retention {
-      mode = "GOVERNANCE"
-      days = var.retention_days
-    }
-  }
-}
-
 # Outputs
-output "central_logs_bucket_id" {
+output "central_logging_bucket_id" {
   description = "ID of the central logging bucket"
-  value       = aws_s3_bucket.central_logs.id
+  value       = aws_s3_bucket.central_logging.id
 }
 
-output "central_logs_bucket_arn" {
+output "central_logging_bucket_arn" {
   description = "ARN of the central logging bucket"
-  value       = aws_s3_bucket.central_logs.arn
+  value       = aws_s3_bucket.central_logging.arn
 }
 
-output "central_logs_bucket_region" {
+output "central_logging_bucket_region" {
   description = "Region of the central logging bucket"
-  value       = aws_s3_bucket.central_logs.region
+  value       = aws_s3_bucket.central_logging.region
 }
 
-output "access_logs_bucket_id" {
-  description = "ID of the access logs bucket"
-  value       = aws_s3_bucket.access_logs.id
+output "access_logging_bucket_id" {
+  description = "ID of the access logging bucket"
+  value       = aws_s3_bucket.access_logging.id
 }
 
-output "access_logs_bucket_arn" {
-  description = "ARN of the access logs bucket"
-  value       = aws_s3_bucket.access_logs.arn
+output "access_logging_bucket_arn" {
+  description = "ARN of the access logging bucket"
+  value       = aws_s3_bucket.access_logging.arn
 }
 
 output "kms_key_id" {
-  description = "ID of the KMS key for bucket encryption"
-  value       = aws_kms_key.central_logs.id
+  description = "ID of the KMS key used for encryption"
+  value       = aws_kms_key.central_logging.id
 }
 
 output "kms_key_arn" {
-  description = "ARN of the KMS key for bucket encryption"
-  value       = aws_kms_key.central_logs.arn
+  description = "ARN of the KMS key used for encryption"
+  value       = aws_kms_key.central_logging.arn
 }
 
 output "kms_key_alias" {
   description = "Alias of the KMS key"
-  value       = aws_kms_alias.central_logs.name
+  value       = aws_kms_alias.central_logging.name
 }
