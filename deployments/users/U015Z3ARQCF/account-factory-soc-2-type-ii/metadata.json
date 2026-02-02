@@ -1,0 +1,20 @@
+{
+  "description": "AFT multi-account setup for SOC 2 Type II compliance",
+  "framework": "SOC 2 Type II",
+  "accounts": 8,
+  "vpcs": 3,
+  "estimated_cost": "$341.40",
+  "primary_region": "us-east-1",
+  "scps": [
+    "deny_security_service_disable",
+    "deny_root_user",
+    "require_imdsv2",
+    "require_encryption",
+    "require_ssl_s3",
+    "deny_public_s3",
+    "deny_leave_organization",
+    "restrict_regions",
+    "deny_vpc_changes"
+  ],
+  "generated_at": "2026-02-02T00:51:48.372520"
+}
