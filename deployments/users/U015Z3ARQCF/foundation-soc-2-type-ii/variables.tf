@@ -32,31 +32,239 @@ variable "az_count" {
 
 
 # Module-specific variables
-variable "enable_guardduty" {
-  type    = bool
-  default = true
+variable "aws_region" {
+  description = "AWS region for resources"
+  type        = string
+  default     = "us-east-1"
 }
 
-variable "enable_security_hub" {
-  type    = bool
-  default = true
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "production"
 }
 
-variable "enable_config" {
-  type    = bool
-  default = true
+variable "vpc_cidr" {
+  description = "CIDR block for VPC"
+  type        = string
+  default     = "10.0.0.0/16"
 }
 
-variable "enable_inspector" {
-  type    = bool
-  default = true
+variable "availability_zones" {
+  description = "Number of availability zones"
+  type        = number
+  default     = 2
 }
 
-variable "enable_macie" {
-  type    = bool
-  default = false
+variable "enable_flow_logs" {
+  description = "Enable VPC Flow Logs for SOC 2 compliance"
+  type        = bool
+  default     = true
+}
+
+variable "log_retention_days" {
+  description = "CloudWatch log retention in days (SOC 2 requires 7 years)"
+  type        = number
+  default     = 2555
+}
+
+variable "enable_nat_gateway_logging" {
+  description = "Enable NAT Gateway logging"
+  type        = bool
+  default     = true
+}
+
+variable "project_name" {
+  description = "Project name for resource naming"
+  type        = string
+  default     = "ingress"
+}
+
+variable "vpc_id" {
+  description = "VPC ID for ALB deployment"
+  type        = string
+}
+
+variable "subnet_ids" {
+  description = "Subnet IDs for ALB (minimum 2 across AZs)"
+  type        = list(string)
+}
+
+variable "enable_waf" {
+  description = "Enable AWS WAF for ALB"
+  type        = bool
+  default     = true
+}
+
+variable "enable_deletion_protection" {
+  description = "Enable deletion protection for ALB"
+  type        = bool
+  default     = true
+}
+
+variable "enable_http2" {
+  description = "Enable HTTP/2 on ALB"
+  type        = bool
+  default     = true
+}
+
+variable "enable_cross_zone_load_balancing" {
+  description = "Enable cross-zone load balancing"
+  type        = bool
+  default     = true
+}
+
+variable "idle_timeout" {
+  description = "Idle timeout in seconds"
+  type        = number
+  default     = 60
+}
+
+variable "log_retention_days" {
+  description = "CloudWatch log retention in days (SOC 2: 7 years)"
+  type        = number
+  default     = 2555
+}
+
+variable "enable_access_logs" {
+  description = "Enable ALB access logs"
+  type        = bool
+  default     = true
 }
 
 variable "tags" {
-  type    = map(string)
-  default = {}
+  description = "Additional tags for resources"
+  type        = map(string)
+  default     = {}
+
+variable "project_name" {
+  description = "Project name for resource naming"
+  type        = string
+  default     = "client-vpn"
+}
+
+variable "client_cidr" {
+  description = "CIDR block for VPN clients"
+  type        = string
+  default     = "10.100.0.0/16"
+}
+
+variable "target_network_cidr" {
+  description = "CIDR block for target network"
+  type        = string
+  default     = "10.0.0.0/8"
+}
+
+variable "vpc_id" {
+  description = "VPC ID for VPN endpoint"
+  type        = string
+}
+
+variable "subnet_ids" {
+  description = "Subnet IDs for VPN endpoint association"
+  type        = list(string)
+}
+
+variable "enable_logging" {
+  description = "Enable CloudWatch logging for VPN"
+  type        = bool
+  default     = true
+}
+
+variable "enable_split_tunnel" {
+  description = "Enable split tunnel mode"
+  type        = bool
+  default     = false
+}
+
+variable "dns_servers" {
+  description = "DNS servers for VPN clients"
+  type        = list(string)
+  default     = []
+}
+
+variable "session_timeout_hours" {
+  description = "VPN session timeout in hours"
+  type        = number
+  default     = 24
+}
+
+variable "aws_region" {
+  description = "AWS region for security services"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "organization_name" {
+  description = "Organization name for tagging"
+  type        = string
+  default     = "MyOrganization"
+}
+
+variable "enable_guardduty" {
+  description = "Enable GuardDuty for threat detection"
+  type        = bool
+  default     = true
+}
+
+variable "enable_security_hub" {
+  description = "Enable Security Hub for compliance monitoring"
+  type        = bool
+  default     = true
+}
+
+variable "enable_config" {
+  description = "Enable AWS Config for configuration recording"
+  type        = bool
+  default     = true
+}
+
+variable "enable_inspector" {
+  description = "Enable Inspector for vulnerability scanning"
+  type        = bool
+  default     = true
+}
+
+variable "enable_macie" {
+  description = "Enable Macie for data classification"
+  type        = bool
+  default     = false
+}
+
+variable "guardduty_datasources" {
+  description = "GuardDuty data sources to enable"
+  type        = list(string)
+  default     = ["s3_logs", "kubernetes_audit_logs", "malware_protection"]
+}
+
+variable "security_hub_standards" {
+  description = "Security Hub standards to enable"
+  type        = list(string)
+  default     = ["CIS AWS Foundations", "AWS Foundational Security Best Practices"]
+}
+
+variable "config_all_supported" {
+  description = "Enable AWS Config to record all supported resources"
+  type        = bool
+  default     = true
+}
+
+variable "inspector_resource_types" {
+  description = "Inspector resource types to scan"
+  type        = list(string)
+  default     = ["EC2", "ECR", "LAMBDA"]
+}
+
+variable "log_retention_days" {
+  description = "CloudWatch log retention in days (SOC 2 requires 7 years minimum for audit logs)"
+  type        = number
+  default     = 2555
+}
+
+variable "tags" {
+  description = "Common tags for all resources"
+  type        = map(string)
+  default = {
+    ManagedBy  = "CARL"
+    Compliance = "SOC2"
+  }

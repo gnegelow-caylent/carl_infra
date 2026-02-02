@@ -13,6 +13,949 @@
 # - Security-first configuration
 
 
+# ======================================================================
+# NETWORKING
+# ======================================================================
+
+# ============================================================
+# EGRESS - Egress architecture: Distributed NAT (NAT per VPC)
+# ============================================================
+
+# Distributed NAT Gateway Architecture for SOC 2 Compliance
+# Single VPC with NAT Gateways in each AZ for high availability egress
+# Includes encryption, logging, and audit trail for SOC 2 compliance
+
+terraform {
+  required_version = ">= 1.5"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+
+  default_tags {
+    tags = {
+      ManagedBy  = "CARL"
+      Compliance = "SOC2"
+      Environment = var.environment
+      CreatedAt  = timestamp()
+    }
+  }
+}
+
+# Variables
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Data source for availability zones
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+# KMS Key for encryption at rest (SOC 2 requirement)
+resource "aws_kms_key" "egress" {
+  description             = "KMS key for egress infrastructure encryption"
+  deletion_window_in_days = 10
+  enable_key_rotation     = true
+
+  tags = {
+    Name = "egress-kms-key"
+  }
+}
+
+resource "aws_kms_alias" "egress" {
+  name          = "alias/egress-infrastructure"
+  target_key_id = aws_kms_key.egress.key_id
+}
+
+# CloudWatch Log Group for VPC Flow Logs (SOC 2 audit trail)
+resource "aws_cloudwatch_log_group" "vpc_flow_logs" {
+  name              = "/aws/vpc/flow-logs/egress"
+  retention_in_days = var.log_retention_days
+  kms_key_id        = aws_kms_key.egress.arn
+
+  tags = {
+    Name = "vpc-flow-logs-egress"
+  }
+}
+
+# IAM Role for VPC Flow Logs
+resource "aws_iam_role" "vpc_flow_logs" {
+  name = "vpc-flow-logs-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "vpc-flow-logs.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "vpc-flow-logs-role"
+  }
+}
+
+resource "aws_iam_role_policy" "vpc_flow_logs" {
+  name = "vpc-flow-logs-policy"
+  role = aws_iam_role.vpc_flow_logs.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogGroups",
+          "logs:DescribeLogStreams"
+        ]
+        Effect   = "Allow"
+        Resource = "${aws_cloudwatch_log_group.vpc_flow_logs.arn}:*"
+      }
+    ]
+  })
+}
+
+# VPC
+resource "aws_vpc" "main" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = {
+    Name = "egress-vpc"
+  }
+}
+
+# VPC Flow Logs (SOC 2 requirement for network monitoring)
+resource "aws_flow_log" "vpc" {
+  count                   = var.enable_flow_logs ? 1 : 0
+  iam_role_arn            = aws_iam_role.vpc_flow_logs.arn
+  log_destination         = "${aws_cloudwatch_log_group.vpc_flow_logs.arn}:*"
+  traffic_type            = "ALL"
+  vpc_id                  = aws_vpc.main.id
+  log_destination_type    = "cloud-watch-logs"
+  log_format              = "${local.vpc_flow_log_format}"
+  max_aggregation_interval = 60
+
+  tags = {
+    Name = "vpc-flow-logs"
+  }
+}
+
+locals {
+  vpc_flow_log_format = "$${version} $${account-id} $${interface-id} $${srcaddr} $${dstaddr} $${srcport} $${dstport} $${protocol} $${packets} $${bytes} $${windowstart} $${windowend} $${action} $${tcpflags} $${type} $${pkt-srcaddr} $${pkt-dstaddr} $${region} $${vpc-id} $${flow-logs-id} $${traffic-type} $${subnet-id} $${instance-id} $${interface-type} $${eni-id} $${local-gateway-route-table-id} $${vpc-peering-connection-id} $${flow-direction} $${traffic-path} $${packet-aggregation-flags}"
+}
+
+# Public Subnets (for NAT Gateways)
+resource "aws_subnet" "public" {
+  count                   = var.availability_zones
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = cidrsubnet(var.vpc_cidr, 4, count.index)
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "public-subnet-${count.index + 1}"
+    Type = "Public"
+  }
+}
+
+# Private Subnets (for application resources)
+resource "aws_subnet" "private" {
+  count             = var.availability_zones
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 4, count.index + var.availability_zones)
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+
+  tags = {
+    Name = "private-subnet-${count.index + 1}"
+    Type = "Private"
+  }
+}
+
+# Internet Gateway
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "egress-igw"
+  }
+}
+
+# Elastic IPs for NAT Gateways (SOC 2: static IPs for audit trail)
+resource "aws_eip" "nat" {
+  count  = var.availability_zones
+  domain = "vpc"
+
+  depends_on = [aws_internet_gateway.main]
+
+  tags = {
+    Name = "nat-eip-${count.index + 1}"
+  }
+}
+
+# NAT Gateways (one per AZ for high availability)
+resource "aws_nat_gateway" "main" {
+  count         = var.availability_zones
+  allocation_id = aws_eip.nat[count.index].id
+  subnet_id     = aws_subnet.public[count.index].id
+
+  depends_on = [aws_internet_gateway.main]
+
+  tags = {
+    Name = "nat-gateway-${count.index + 1}"
+  }
+}
+
+# Public Route Table
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block      = "0.0.0.0/0"
+    gateway_id      = aws_internet_gateway.main.id
+  }
+
+  tags = {
+    Name = "public-rt"
+  }
+}
+
+# Public Route Table Associations
+resource "aws_route_table_association" "public" {
+  count          = var.availability_zones
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+# Private Route Tables (one per AZ for NAT Gateway affinity)
+resource "aws_route_table" "private" {
+  count  = var.availability_zones
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.main[count.index].id
+  }
+
+  tags = {
+    Name = "private-rt-${count.index + 1}"
+  }
+}
+
+# Private Route Table Associations
+resource "aws_route_table_association" "private" {
+  count          = var.availability_zones
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private[count.index].id
+}
+
+# Network ACL for Public Subnets (SOC 2: network segmentation)
+resource "aws_network_acl" "public" {
+  vpc_id     = aws_vpc.main.id
+  subnet_ids = aws_subnet.public[*].id
+
+  # Inbound: Allow HTTP/HTTPS from anywhere
+  ingress {
+    protocol   = "tcp"
+    rule_no    = 100
+    action     = "allow"
+    cidr_block = "0.0.0.0/0"
+    from_port  = 80
+    to_port    = 80
+  }
+
+  ingress {
+    protocol   = "tcp"
+    rule_no    = 110
+    action     = "allow"
+    cidr_block = "0.0.0.0/0"
+    from_port  = 443
+    to_port    = 443
+  }
+
+  # Inbound: Allow ephemeral ports
+  ingress {
+    protocol   = "tcp"
+    rule_no    = 120
+    action     = "allow"
+    cidr_block = "0.0.0.0/0"
+    from_port  = 1024
+    to_port    = 65535
+  }
+
+  # Outbound: Allow all
+  egress {
+    protocol   = "-1"
+    rule_no    = 100
+    action     = "allow"
+    cidr_block = "0.0.0.0/0"
+    from_port  = 0
+    to_port    = 0
+  }
+
+  tags = {
+    Name = "public-nacl"
+  }
+}
+
+# Network ACL for Private Subnets (SOC 2: network segmentation)
+resource "aws_network_acl" "private" {
+  vpc_id     = aws_vpc.main.id
+  subnet_ids = aws_subnet.private[*].id
+
+  # Inbound: Allow from VPC CIDR
+  ingress {
+    protocol   = "-1"
+    rule_no    = 100
+    action     = "allow"
+    cidr_block = var.vpc_cidr
+    from_port  = 0
+    to_port    = 0
+  }
+
+  # Inbound: Allow ephemeral ports from anywhere
+  ingress {
+    protocol   = "tcp"
+    rule_no    = 110
+    action     = "allow"
+    cidr_block = "0.0.0.0/0"
+    from_port  = 1024
+    to_port    = 65535
+  }
+
+  # Outbound: Allow all
+  egress {
+    protocol   = "-1"
+    rule_no    = 100
+    action     = "allow"
+    cidr_block = "0.0.0.0/0"
+    from_port  = 0
+    to_port    = 0
+  }
+
+  tags = {
+    Name = "private-nacl"
+  }
+}
+
+# Security Group for NAT Gateway (SOC 2: least privilege)
+resource "aws_security_group" "nat" {
+  name        = "nat-gateway-sg"
+  description = "Security group for NAT Gateway"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+    description = "Allow TCP from VPC"
+  }
+
+  ingress {
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "udp"
+    cidr_blocks = [var.vpc_cidr]
+    description = "Allow UDP from VPC"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound"
+  }
+
+  tags = {
+    Name = "nat-gateway-sg"
+  }
+}
+
+# CloudWatch Log Group for NAT Gateway Logs (SOC 2 audit trail)
+resource "aws_cloudwatch_log_group" "nat_gateway" {
+  count             = var.enable_nat_gateway_logging ? 1 : 0
+  name              = "/aws/nat-gateway/egress"
+  retention_in_days = var.log_retention_days
+  kms_key_id        = aws_kms_key.egress.arn
+
+  tags = {
+    Name = "nat-gateway-logs"
+  }
+}
+
+# IAM Role for NAT Gateway Logging
+resource "aws_iam_role" "nat_gateway_logging" {
+  count = var.enable_nat_gateway_logging ? 1 : 0
+  name  = "nat-gateway-logging-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "nat.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "nat-gateway-logging-role"
+  }
+}
+
+resource "aws_iam_role_policy" "nat_gateway_logging" {
+  count = var.enable_nat_gateway_logging ? 1 : 0
+  name  = "nat-gateway-logging-policy"
+  role  = aws_iam_role.nat_gateway_logging[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogGroups",
+          "logs:DescribeLogStreams"
+        ]
+        Effect   = "Allow"
+        Resource = "${aws_cloudwatch_log_group.nat_gateway[0].arn}:*"
+      }
+    ]
+  })
+}
+
+# CloudTrail for API audit logging (SOC 2 requirement)
+resource "aws_s3_bucket" "cloudtrail" {
+  bucket = "cloudtrail-egress-${data.aws_caller_identity.current.account_id}"
+
+  tags = {
+    Name = "cloudtrail-bucket"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  versioning_configuration {
+
+# ============================================================
+# INGRESS - Ingress architecture: Distributed Ingress (ALB per VPC)
+# ============================================================
+
+# Distributed ALB with WAF for SOC 2 Compliance
+# This module creates a production-ready Application Load Balancer with AWS WAF
+# protection, encryption, logging, and comprehensive monitoring
+
+terraform {
+  required_version = ">= 1.5"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+
+  default_tags {
+    tags = {
+      ManagedBy  = "CARL"
+      Compliance = "SOC2"
+      CreatedAt  = timestamp()
+    }
+  }
+}
+
+# Variables
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+
+# Data source for current AWS account
+data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}
+
+# KMS Key for encryption at rest (SOC 2 requirement)
+resource "aws_kms_key" "alb_logs" {
+  description             = "KMS key for ALB and WAF logs encryption"
+  deletion_window_in_days = 10
+  enable_key_rotation     = true
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-alb-logs-key"
+    }
+  )
+}
+
+resource "aws_kms_alias" "alb_logs" {
+  name          = "alias/${var.project_name}-alb-logs"
+  target_key_id = aws_kms_key.alb_logs.key_id
+}
+
+# KMS Key Policy for ALB service
+resource "aws_kms_key_policy" "alb_logs" {
+  key_id = aws_kms_key.alb_logs.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "Enable IAM User Permissions"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow ALB Service"
+        Effect = "Allow"
+        Principal = {
+          Service = "elasticloadbalancing.amazonaws.com"
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow CloudWatch Logs"
+        Effect = "Allow"
+        Principal = {
+          Service = "logs.amazonaws.com"
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:CreateGrant",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# S3 bucket for ALB access logs (SOC 2 requirement)
+resource "aws_s3_bucket" "alb_logs" {
+  bucket = "${var.project_name}-alb-logs-${data.aws_caller_identity.current.account_id}-${data.aws_region.current.name}"
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-alb-logs"
+    }
+  )
+}
+
+# Block public access to logs bucket
+resource "aws_s3_bucket_public_access_block" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# Enable versioning for audit trail
+resource "aws_s3_bucket_versioning" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# Enable encryption at rest
+resource "aws_s3_bucket_server_side_encryption_configuration" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.alb_logs.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+# Bucket policy for ALB service to write logs
+resource "aws_s3_bucket_policy" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AWSLogDeliveryWrite"
+        Effect = "Allow"
+        Principal = {
+          Service = "elasticloadbalancing.amazonaws.com"
+        }
+        Action   = "s3:PutObject"
+        Resource = "${aws_s3_bucket.alb_logs.arn}/*"
+        Condition = {
+          StringEquals = {
+            "s3:x-amz-acl" = "bucket-owner-full-control"
+          }
+        }
+      },
+      {
+        Sid    = "AWSLogDeliveryAclCheck"
+        Effect = "Allow"
+        Principal = {
+          Service = "elasticloadbalancing.amazonaws.com"
+        }
+        Action   = "s3:GetBucketAcl"
+        Resource = aws_s3_bucket.alb_logs.arn
+      },
+      {
+        Sid    = "DenyUnencryptedObjectUploads"
+        Effect = "Deny"
+        Principal = "*"
+        Action   = "s3:PutObject"
+        Resource = "${aws_s3_bucket.alb_logs.arn}/*"
+        Condition = {
+          StringNotEquals = {
+            "s3:x-amz-server-side-encryption" = "aws:kms"
+          }
+        }
+      },
+      {
+        Sid    = "DenyInsecureTransport"
+        Effect = "Deny"
+        Principal = "*"
+        Action   = "s3:*"
+        Resource = [
+          aws_s3_bucket.alb_logs.arn,
+          "${aws_s3_bucket.alb_logs.arn}/*"
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      }
+    ]
+  })
+}
+
+# Lifecycle policy for log retention (SOC 2: 7 years)
+resource "aws_s3_bucket_lifecycle_configuration" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+
+  rule {
+    id     = "archive-old-logs"
+    status = "Enabled"
+
+    transition {
+      days          = 90
+      storage_class = "GLACIER"
+    }
+
+    expiration {
+      days = var.log_retention_days
+    }
+
+    noncurrent_version_transition {
+      noncurrent_days = 90
+      storage_class   = "GLACIER"
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = var.log_retention_days
+    }
+  }
+}
+
+# Security group for ALB
+resource "aws_security_group" "alb" {
+  name        = "${var.project_name}-alb-sg"
+  description = "Security group for distributed ALB"
+  vpc_id      = var.vpc_id
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-alb-sg"
+    }
+  )
+}
+
+# Ingress rule for HTTP (redirect to HTTPS)
+resource "aws_vpc_security_group_ingress_rule" "alb_http" {
+  security_group_id = aws_security_group.alb.id
+
+  description = "Allow HTTP traffic for redirect to HTTPS"
+  from_port   = 80
+  to_port     = 80
+  ip_protocol = "tcp"
+  cidr_ipv4   = "0.0.0.0/0"
+
+  tags = {
+    Name = "allow-http"
+  }
+}
+
+# Ingress rule for HTTPS
+resource "aws_vpc_security_group_ingress_rule" "alb_https" {
+  security_group_id = aws_security_group.alb.id
+
+  description = "Allow HTTPS traffic"
+  from_port   = 443
+  to_port     = 443
+  ip_protocol = "tcp"
+  cidr_ipv4   = "0.0.0.0/0"
+
+  tags = {
+    Name = "allow-https"
+  }
+}
+
+# Egress rule for ALB
+resource "aws_vpc_security_group_egress_rule" "alb" {
+  security_group_id = aws_security_group.alb.id
+
+  description = "Allow all outbound traffic"
+  from_port   = 0
+  to_port     = 65535
+  ip_protocol = "-1"
+  cidr_ipv4   = "0.0.0.0/0"
+
+  tags = {
+    Name = "allow-all-outbound"
+  }
+}
+
+# CloudWatch Log Group for ALB access logs
+resource "aws_cloudwatch_log_group" "alb" {
+  name              = "/aws/alb/${var.project_name}"
+  retention_in_days = var.log_retention_days
+  kms_key_id        = aws_kms_key.alb_logs.arn
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-alb-logs"
+    }
+  )
+}
+
+# Application Load Balancer
+resource "aws_lb" "main" {
+  name               = "${var.project_name}-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb.id]
+  subnets            = var.subnet_ids
+
+  enable_deletion_protection       = var.enable_deletion_protection
+  enable_http2                     = var.enable_http2
+  enable_cross_zone_load_balancing = var.enable_cross_zone_load_balancing
+  idle_timeout                     = var.idle_timeout
+
+  access_logs {
+    bucket  = aws_s3_bucket.alb_logs.id
+    enabled = var.enable_access_logs
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-alb"
+    }
+  )
+
+  depends_on = [
+    aws_s3_bucket_policy.alb_logs,
+    aws_kms_key_policy.alb_logs
+  ]
+}
+
+# WAF Web ACL for ALB
+resource "aws_wafv2_web_acl" "alb" {
+  count = var.enable_waf ? 1 : 0
+
+  name  = "${var.project_name}-waf-acl"
+  scope = "REGIONAL"
+
+  default_action {
+    allow {}
+  }
+
+  # AWS Managed Rules - Common Rule Set
+  rule {
+    name     = "AWSManagedRulesCommonRuleSet"
+    priority = 0
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+
+        rule_action_override {
+          name = "SizeRestrictions_BODY"
+
+          action_to_use {
+            block {}
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "AWSManagedRulesCommonRuleSetMetric"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Rate limiting rule
+  rule {
+    name     = "RateLimitRule"
+    priority = 1
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = 2000
+        aggregate_key_type = "IP"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "RateLimitRuleMetric"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # IP reputation list rule
+  rule {
+    name     = "AWSManagedRulesAmazonIpReputationList"
+    priority = 2
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesAmazonIpReputationList"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "AWSManagedRulesAmazonIpReputationListMetric"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${var.project_name}-waf-metrics"
+    sampled_requests_enabled   = true
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-waf-acl"
+    }
+  )
+}
+
+# Associate WAF with ALB
+resource "aws_wafv2_web_acl_association" "alb" {
+  count = var.enable_waf ? 1 : 0
+
+  resource_arn = aws_lb.main.arn
+  web_acl_arn  = aws_wafv2_web_acl.alb[0].arn
+}
+
+# CloudWatch Log Group for WAF
+resource "aws_cloudwatch_log_group" "waf" {
+  count = var.enable_waf ? 1 : 0
+
+  name              = "/aws/waf/${var.project_name}"
+  retention_in_days = var.log_retention_days
+  kms_key_id        = aws_kms_key.alb_logs.arn
+
+  tags =
 
 # ======================================================================
 # SECURITY SERVICES
@@ -22,155 +965,884 @@
 # SECURITY - Security services stack for SOC 2 compliance
 # ============================================================
 
-# Security Services Stack
-# Core security services for SOC 2 compliance
-#
-# Cost: approx. $50/mo for baseline, scales with resource count
+# AWS Security Services Module - SOC 2 Compliance
+# Implements GuardDuty, Security Hub, AWS Config, and Inspector
+# for comprehensive threat detection and compliance monitoring
 
-
-
-
-
-
-
-
-
-
-
-
-}
-
-# GuardDuty
-resource "aws_guardduty_detector" "main" {
-  count  = var.enable_guardduty ? 1 : 0
-  enable = true
-
-  datasources {
-    s3_logs {
-      enable = true
-    }
-    kubernetes {
-      audit_logs {
-        enable = true
-      }
-    }
-    malware_protection {
-      scan_ec2_instance_with_findings {
-        ebs_volumes {
-          enable = true
-        }
-      }
+terraform {
+  required_version = ">= 1.5"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.0"
     }
   }
-
-  tags = var.tags
 }
 
-# Security Hub
-resource "aws_securityhub_account" "main" {
-  count                        = var.enable_security_hub ? 1 : 0
-  enable_default_standards     = true
-  control_finding_generator    = "SECURITY_CONTROL"
-  auto_enable_controls         = true
+provider "aws" {
+  region = var.aws_region
 }
 
-# Enable CIS AWS Foundations Benchmark
-resource "aws_securityhub_standards_subscription" "cis" {
-  count         = var.enable_security_hub ? 1 : 0
-  standards_arn = "arn:aws:securityhub:::ruleset/cis-aws-foundations-benchmark/v/1.4.0"
-  depends_on    = [aws_securityhub_account.main]
+# Variables
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
 
-# Enable AWS Foundational Security Best Practices
-resource "aws_securityhub_standards_subscription" "aws_foundational" {
-  count         = var.enable_security_hub ? 1 : 0
-  standards_arn = "arn:aws:securityhub:${data.aws_region.current.name}::standards/aws-foundational-security-best-practices/v/1.0.0"
-  depends_on    = [aws_securityhub_account.main]
+# KMS Key for encryption at rest (SOC 2 CC6.1)
+resource "aws_kms_key" "security_services" {
+  description             = "KMS key for security services encryption"
+  deletion_window_in_days = 10
+  enable_key_rotation     = true
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.environment}-security-services-key"
+    }
+  )
 }
 
-# AWS Config
-resource "aws_config_configuration_recorder" "main" {
-  count    = var.enable_config ? 1 : 0
-  name     = "main-recorder"
-  role_arn = aws_iam_role.config[0].arn
-
-  recording_group {
-    all_supported = true
-    include_global_resource_types = true
-  }
+resource "aws_kms_alias" "security_services" {
+  name          = "alias/${var.environment}-security-services"
+  target_key_id = aws_kms_key.security_services.key_id
 }
 
-resource "aws_config_configuration_recorder_status" "main" {
-  count      = var.enable_config ? 1 : 0
-  name       = aws_config_configuration_recorder.main[0].name
-  is_enabled = true
-  depends_on = [aws_config_delivery_channel.main]
+# S3 bucket for security service logs (SOC 2 CC7.2)
+resource "aws_s3_bucket" "security_logs" {
+  bucket = "${var.organization_name}-security-logs-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.environment}-security-logs"
+    }
+  )
 }
 
-resource "aws_config_delivery_channel" "main" {
-  count          = var.enable_config ? 1 : 0
-  name           = "main-delivery-channel"
-  s3_bucket_name = aws_s3_bucket.config[0].id
-  depends_on     = [aws_config_configuration_recorder.main]
-}
-
-# Config S3 Bucket
-resource "aws_s3_bucket" "config" {
-  count  = var.enable_config ? 1 : 0
-  bucket = "config-bucket-${data.aws_caller_identity.current.account_id}"
-
-  tags = var.tags
-}
-
-resource "aws_s3_bucket_versioning" "config" {
-  count  = var.enable_config ? 1 : 0
-  bucket = aws_s3_bucket.config[0].id
+resource "aws_s3_bucket_versioning" "security_logs" {
+  bucket = aws_s3_bucket.security_logs.id
 
   versioning_configuration {
     status = "Enabled"
   }
 }
 
-# Config IAM Role
-resource "aws_iam_role" "config" {
-  count = var.enable_config ? 1 : 0
-  name  = "aws-config-role"
+resource "aws_s3_bucket_server_side_encryption_configuration" "security_logs" {
+  bucket = aws_s3_bucket.security_logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.security_services.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "security_logs" {
+  bucket = aws_s3_bucket.security_logs.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "security_logs" {
+  bucket = aws_s3_bucket.security_logs.id
+
+  rule {
+    id     = "archive-old-logs"
+    status = "Enabled"
+
+    transition {
+      days          = 90
+      storage_class = "GLACIER"
+    }
+
+    expiration {
+      days = 2555
+    }
+  }
+}
+
+# CloudWatch Log Group for security services (SOC 2 CC7.2)
+resource "aws_cloudwatch_log_group" "security_services" {
+  name              = "/aws/security-services/${var.environment}"
+  retention_in_days = var.log_retention_days
+  kms_key_id        = aws_kms_key.security_services.arn
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.environment}-security-services-logs"
+    }
+  )
+}
+
+# IAM Role for AWS Config (SOC 2 CC7.2)
+resource "aws_iam_role" "config_role" {
+  name = "${var.environment}-aws-config-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
-      Principal = {
-        Service = "config.amazonaws.com"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "config.amazonaws.com"
+        }
       }
-    }]
+    ]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "config_policy" {
+  role       = aws_iam_role.config_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/ConfigRole"
+}
+
+resource "aws_iam_role_policy" "config_s3_policy" {
+  name = "${var.environment}-config-s3-policy"
+  role = aws_iam_role.config_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetBucketVersioning",
+          "s3:PutObject",
+          "s3:GetObject"
+        ]
+        Resource = [
+          aws_s3_bucket.security_logs.arn,
+          "${aws_s3_bucket.security_logs.arn}/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = aws_kms_key.security_services.arn
+      }
+    ]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "config" {
-  count      = var.enable_config ? 1 : 0
-  role       = aws_iam_role.config[0].name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWS_ConfigRole"
+# AWS Config Recorder (SOC 2 CC7.2)
+resource "aws_config_configuration_recorder" "main" {
+  count       = var.enable_config ? 1 : 0
+  name        = "${var.environment}-config-recorder"
+  role_arn    = aws_iam_role.config_role.arn
+  depends_on  = [aws_iam_role_policy.config_s3_policy]
+
+  recording_group {
+    all_supported = var.config_all_supported
+    include_global = true
+  }
+
+  tags = var.tags
 }
 
-# Inspector
-resource "aws_inspector2_enabler" "main" {
-  count         = var.enable_inspector ? 1 : 0
-  account_ids   = [data.aws_caller_identity.current.account_id]
-  resource_types = ["EC2", "ECR", "LAMBDA"]
+resource "aws_config_configuration_recorder_status" "main" {
+  count              = var.enable_config ? 1 : 0
+  name               = aws_config_configuration_recorder.main[0].name
+  is_enabled         = true
+  depends_on         = [aws_config_delivery_channel.main]
+  start_recording    = true
 }
 
-# Macie (optional - can be expensive for large S3)
-resource "aws_macie2_account" "main" {
-  count                        = var.enable_macie ? 1 : 0
+resource "aws_config_delivery_channel" "main" {
+  count                          = var.enable_config ? 1 : 0
+  name                           = "${var.environment}-config-channel"
+  s3_bucket_name                 = aws_s3_bucket.security_logs.id
+  depends_on                     = [aws_iam_role_policy.config_s3_policy]
+
+  s3_key_prefix = "aws-config"
+
+  tags = var.tags
+}
+
+# GuardDuty Detector (SOC 2 CC7.1)
+resource "aws_guardduty_detector" "main" {
+  count            = var.enable_guardduty ? 1 : 0
+  enable           = true
   finding_publishing_frequency = "FIFTEEN_MINUTES"
-  status                       = "ENABLED"
+
+  datasources {
+    s3_logs {
+      enable = contains(var.guardduty_datasources, "s3_logs")
+    }
+    kubernetes {
+      audit_logs {
+        enable = contains(var.guardduty_datasources, "kubernetes_audit_logs")
+      }
+    }
+    malware_protection {
+      scan_ec2_instance_with_findings {
+        ebs_volumes = contains(var.guardduty_datasources, "malware_protection")
+      }
+    }
+  }
+
+  tags = var.tags
 }
 
-# Data sources
+# GuardDuty ThreatIntelSet for custom threat intelligence
+resource "aws_guardduty_threatintelset" "main" {
+  count              = var.enable_guardduty ? 1 : 0
+  activate           = true
+  detector_id        = aws_guardduty_detector.main[0].id
+  format             = "TXT"
+  location           = "${aws_s3_bucket.security_logs.arn}/guardduty-threatintelset.txt"
+  name               = "${var.environment}-threat-intel"
+
+  depends_on = [aws_s3_bucket.security_logs]
+
+  tags = var.tags
+}
+
+# Security Hub (SOC 2 CC7.2)
+resource "aws_securityhub_account" "main" {
+  count = var.enable_security_hub ? 1 : 0
+
+  tags = var.tags
+}
+
+resource "aws_securityhub_standards_subscription" "cis" {
+  count           = var.enable_security_hub && contains(var.security_hub_standards, "CIS AWS Foundations") ? 1 : 0
+  standards_arn   = "arn:aws:securityhub:${var.aws_region}::standards/aws-foundational-security-best-practices/v/1.0.0"
+  depends_on      = [aws_securityhub_account.main]
+}
+
+resource "aws_securityhub_standards_subscription" "fsbp" {
+  count           = var.enable_security_hub && contains(var.security_hub_standards, "AWS Foundational Security Best Practices") ? 1 : 0
+  standards_arn   = "arn:aws:securityhub:${var.aws_region}::standards/aws-foundational-security-best-practices/v/1.0.0"
+  depends_on      = [aws_securityhub_account.main]
+}
+
+# Inspector (SOC 2 CC7.1)
+resource "aws_inspector2_enablement" "main" {
+  count = var.enable_inspector ? 1 : 0
+
+  resource_types = var.inspector_resource_types
+}
+
+# CloudTrail for audit logging (SOC 2 CC7.2)
+resource "aws_cloudtrail" "security_services" {
+  name                          = "${var.environment}-security-trail"
+  s3_bucket_name                = aws_s3_bucket.security_logs.id
+  include_global_service_events = true
+  is_multi_region_trail         = true
+  enable_log_file_validation    = true
+  depends_on                    = [aws_s3_bucket_policy.cloudtrail]
+  kms_key_id                    = aws_kms_key.security_services.arn
+
+  event_selector {
+    read_write_type           = "All"
+    include_management_events = true
+
+    data_resource {
+      type   = "AWS::S3::Object"
+      values = ["arn:aws:s3:::*/*"]
+    }
+
+    data_resource {
+      type   = "AWS::Lambda::Function"
+      values = ["arn:aws:lambda:*:*:function/*"]
+    }
+  }
+
+  tags = var.tags
+}
+
+resource "aws_s3_bucket_policy" "cloudtrail" {
+  bucket = aws_s3_bucket.security_logs.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AWSCloudTrailAclCheck"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+        Action   = "s3:GetBucketAcl"
+        Resource = aws_s3_bucket.security_logs.arn
+      },
+      {
+        Sid    = "AWSCloudTrailWrite"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+        Action   = "s3:PutObject"
+        Resource = "${aws_s3_bucket.security_logs.arn}/*"
+        Condition = {
+          StringEquals = {
+            "s3:x-amz-acl" = "bucket-owner-full-control"
+          }
+        }
+      }
+    ]
+  })
+}
+
+# VPC Flow Logs for network monitoring (SOC 2 CC7.2)
+resource "aws_flow_log_group" "security" {
+  name              = "/aws/vpc/security-flow-logs"
+  retention_in_days = var.log_retention_days
+  kms_key_id        = aws_kms_key.security_services.arn
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.environment}-vpc-flow-logs"
+    }
+  )
+}
+
+resource "aws_iam_role" "vpc_flow_logs" {
+  name = "${var.environment}-vpc-flow-logs-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "vpc-flow-logs.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy" "vpc_flow_logs" {
+  name = "${var.environment}-vpc-flow-logs-policy"
+  role = aws_iam_role.vpc_flow_logs.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogGroups",
+          "logs:DescribeLogStreams"
+        ]
+        Effect   = "Allow"
+        Resource = "${aws_flow_log_group.security.arn}:*"
+      }
+    ]
+  })
+}
+
+# Data source for current AWS account
 data "aws_caller_identity" "current" {}
-data "aws_region" "current" {}
+
+# Outputs
+
+
+output "guardduty_detector_arn
+
+# ======================================================================
+# CONNECTIVITY
+# ======================================================================
+
+# ============================================================
+# CLIENT_VPN - Remote access: AWS Client VPN
+# ============================================================
+
+# AWS Client VPN Endpoint with SOC 2 Compliance
+# This module creates a secure Client VPN endpoint with encryption, logging, and audit controls
+
+terraform {
+  required_version = ">= 1.5"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+
+  default_tags {
+    tags = {
+      ManagedBy  = "CARL"
+      Compliance = "SOC2"
+      CreatedAt  = timestamp()
+    }
+  }
+}
+
+provider "tls" {}
+
+# Variables
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+
+# Data source for VPC
+data "aws_vpc" "target" {
+  id = var.vpc_id
+}
+
+# KMS Key for encryption (SOC 2: Encryption at rest)
+resource "aws_kms_key" "vpn" {
+  description             = "KMS key for Client VPN encryption"
+  deletion_window_in_days = 10
+  enable_key_rotation     = true
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-kms-key"
+    }
+  )
+}
+
+resource "aws_kms_alias" "vpn" {
+  name          = "alias/${var.project_name}-vpn"
+  target_key_id = aws_kms_key.vpn.key_id
+}
+
+# CloudWatch Log Group for VPN logging (SOC 2: Logging and audit trail)
+resource "aws_cloudwatch_log_group" "vpn" {
+  count             = var.enable_logging ? 1 : 0
+  name              = "/aws/clientvpn/${var.project_name}"
+  retention_in_days = var.log_retention_days
+  kms_key_id        = aws_kms_key.vpn.arn
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-log-group"
+    }
+  )
+}
+
+resource "aws_cloudwatch_log_stream" "vpn" {
+  count          = var.enable_logging ? 1 : 0
+  name           = "vpn-connection-logs"
+  log_group_name = aws_cloudwatch_log_group.vpn[0].name
+}
+
+# Self-signed certificate for server (Production should use ACM)
+resource "tls_private_key" "server" {
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+resource "tls_self_signed_cert" "server" {
+  private_key_pem = tls_private_key.server.private_key_pem
+
+  subject {
+    common_name  = "${var.project_name}-server"
+    organization = "Organization"
+  }
+
+  validity_period_hours = 8760
+
+  allowed_uses = [
+    "key_encipherment",
+    "digital_signature",
+    "server_auth",
+  ]
+}
+
+# Import server certificate to ACM
+resource "aws_acm_certificate" "server" {
+  private_key      = tls_private_key.server.private_key_pem
+  certificate_body = tls_self_signed_cert.server.cert_pem
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-server-cert"
+    }
+  )
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Self-signed certificate for client
+resource "tls_private_key" "client" {
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+resource "tls_self_signed_cert" "client" {
+  private_key_pem = tls_private_key.client.private_key_pem
+
+  subject {
+    common_name  = "${var.project_name}-client"
+    organization = "Organization"
+  }
+
+  validity_period_hours = 8760
+
+  allowed_uses = [
+    "key_encipherment",
+    "digital_signature",
+    "client_auth",
+  ]
+}
+
+# Import client certificate to ACM
+resource "aws_acm_certificate" "client" {
+  private_key      = tls_private_key.client.private_key_pem
+  certificate_body = tls_self_signed_cert.client.cert_pem
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-client-cert"
+    }
+  )
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Security Group for VPN endpoint (SOC 2: Access control)
+resource "aws_security_group" "vpn" {
+  name        = "${var.project_name}-sg"
+  description = "Security group for Client VPN endpoint"
+  vpc_id      = var.vpc_id
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-sg"
+    }
+  )
+}
+
+# Ingress rule for VPN protocol (UDP 443)
+resource "aws_vpc_security_group_ingress_rule" "vpn_udp" {
+  security_group_id = aws_security_group.vpn.id
+
+  description = "Allow VPN UDP traffic"
+  from_port   = 443
+  to_port     = 443
+  ip_protocol = "udp"
+  cidr_ipv4   = "0.0.0.0/0"
+
+  tags = {
+    Name = "vpn-udp-ingress"
+  }
+}
+
+# Ingress rule for VPN protocol (TCP 443)
+resource "aws_vpc_security_group_ingress_rule" "vpn_tcp" {
+  security_group_id = aws_security_group.vpn.id
+
+  description = "Allow VPN TCP traffic"
+  from_port   = 443
+  to_port     = 443
+  ip_protocol = "tcp"
+  cidr_ipv4   = "0.0.0.0/0"
+
+  tags = {
+    Name = "vpn-tcp-ingress"
+  }
+}
+
+# Egress rule for all traffic
+resource "aws_vpc_security_group_egress_rule" "vpn_all" {
+  security_group_id = aws_security_group.vpn.id
+
+  description = "Allow all outbound traffic"
+  from_port   = 0
+  to_port     = 65535
+  ip_protocol = "-1"
+  cidr_ipv4   = "0.0.0.0/0"
+
+  tags = {
+    Name = "vpn-egress-all"
+  }
+}
+
+# Client VPN Endpoint (SOC 2: Encryption in transit with TLS 1.2+)
+resource "aws_ec2_client_vpn_endpoint" "main" {
+  description            = "Client VPN endpoint for ${var.environment}"
+  client_cidr_block      = var.client_cidr
+  server_certificate_arn = aws_acm_certificate.server.arn
+  authentication_options {
+    type                       = "certificate-authentication"
+    root_certificate_chain_arn = aws_acm_certificate.client.arn
+  }
+
+  connection_log_options {
+    cloudwatch_log_group  = var.enable_logging ? aws_cloudwatch_log_group.vpn[0].name : null
+    cloudwatch_log_stream = var.enable_logging ? aws_cloudwatch_log_stream.vpn[0].name : null
+    enabled               = var.enable_logging
+  }
+
+  security_group_ids             = [aws_security_group.vpn.id]
+  split_tunnel                   = var.enable_split_tunnel
+  session_timeout_hours          = var.session_timeout_hours
+  transport_protocol             = "tls"
+  vpn_protocol                   = "openvpn"
+  dns_servers                    = length(var.dns_servers) > 0 ? var.dns_servers : null
+  self_service_portal_enabled    = true
+  client_login_banner_options {
+    enabled = true
+    banner  = "Welcome to ${var.project_name} VPN. This system is for authorized use only."
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-endpoint"
+    }
+  )
+
+  depends_on = [
+    aws_cloudwatch_log_group.vpn,
+    aws_cloudwatch_log_stream.vpn
+  ]
+}
+
+# Target Network Association
+resource "aws_ec2_client_vpn_target_network_association" "main" {
+  count                 = length(var.subnet_ids)
+  client_vpn_endpoint_id = aws_ec2_client_vpn_endpoint.main.id
+  subnet_id             = var.subnet_ids[count.index]
+}
+
+# Authorization rule for target network (SOC 2: Access control)
+resource "aws_ec2_client_vpn_authorization_rule" "target" {
+  client_vpn_endpoint_id = aws_ec2_client_vpn_endpoint.main.id
+  target_network_cidr    = var.target_network_cidr
+  authorize_all_groups   = true
+  description            = "Allow access to target network"
+}
+
+# Ingress rule for target network security group
+resource "aws_security_group" "target" {
+  name        = "${var.project_name}-target-sg"
+  description = "Security group for VPN target network"
+  vpc_id      = var.vpc_id
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-target-sg"
+    }
+  )
+}
+
+resource "aws_vpc_security_group_ingress_rule" "from_vpn" {
+  security_group_id = aws_security_group.target.id
+
+  description       = "Allow traffic from VPN clients"
+  from_port         = 0
+  to_port           = 65535
+  ip_protocol       = "-1"
+  cidr_ipv4         = var.client_cidr
+  referenced_security_group_id = null
+
+  tags = {
+    Name = "from-vpn-clients"
+  }
+}
+
+# CloudTrail for audit logging (SOC 2: Audit trail)
+resource "aws_s3_bucket" "cloudtrail" {
+  bucket = "${var.project_name}-cloudtrail-${data.aws_caller_identity.current.account_id}"
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-cloudtrail-bucket"
+    }
+  )
+}
+
+resource "aws_s3_bucket_versioning" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.vpn.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  rule {
+    id     = "archive-old-logs"
+    status = "Enabled"
+
+    transition {
+      days          = 90
+      storage_class = "GLACIER"
+    }
+
+    expiration {
+      days = 2555
+    }
+  }
+}
+
+# S3 bucket policy for CloudTrail
+resource "aws_s3_bucket_policy" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AWSCloudTrailAclCheck"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+        Action   = "s3:GetBucketAcl"
+        Resource = aws_s3_bucket.cloudtrail.arn
+      },
+      {
+        Sid    = "AWSCloudTrailWrite"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+        Action   = "s3:PutObject"
+        Resource = "${aws_s3_bucket.cloudtrail.arn}/*"
+        Condition = {
+          StringEquals = {
+            "s3:x-amz-acl" = "bucket-owner-full-control"
+          }
+        }
+      }
+    ]
+  })
+}
+
+# CloudTrail for VPN API calls
+resource "aws_cloudtrail" "vpn" {
+  depends_on = [aws_s3_bucket_policy.cloudtrail]
+
+  name                          = "${var.project_name}-trail"
+  s3_bucket_name                = aws_s3_bucket.cloudtrail.id
+  include_global_service_events = true
+  is_multi_region_trail         = true
+  enable_log_file_validation    = true
+  kms_key_id                    = aws_kms_key.vpn.arn
+
+  event_selector {
+    read_write_type           = "All"
+    include_management_events = true
+
+    data_resource {
+      type   = "AWS::EC2::ClientVpnEndpoint"
+      values = ["arn:aws:ec2:*:*:client-vpn-endpoint/*"]
+    }
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-trail"
+    }
+  )
+}
+
+# Data source for current AWS account
+data "aws_caller_identity" "current" {}
 
 # ============================================================================
 # DATA SOURCES
