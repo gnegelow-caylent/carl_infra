@@ -1,0 +1,12 @@
+{
+  "compliance_notes": [
+    "Blueprint implementation in progress"
+  ],
+  "deployment_steps": [
+    "Contact administrator for full blueprint"
+  ],
+  "config": {
+    "name": "main",
+    "environment": "prod"
+  }
+}
