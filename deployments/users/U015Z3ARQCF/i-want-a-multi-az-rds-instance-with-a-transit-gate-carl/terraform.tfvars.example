@@ -1,0 +1,85 @@
+```hcl
+# AWS Region for resource deployment
+aws_region = "us-east-1"
+
+# Resource naming prefix for all AWS resources
+resource_prefix = "carl"
+
+# Environment designation (dev, staging, prod)
+environment = "prod"
+
+# VPC Configuration
+vpc_cidr = "10.0.0.0/16"
+
+# Availability Zones for multi-AZ deployment
+availability_zones = ["us-east-1a", "us-east-1b"]
+
+# Private subnet CIDRs (one per AZ for RDS)
+private_subnet_cidrs = ["10.0.1.0/24", "10.0.2.0/24"]
+
+# Public subnet CIDRs (optional, for bastion/NAT)
+public_subnet_cidrs = ["10.0.101.0/24", "10.0.102.0/24"]
+
+# RDS Configuration
+rds_engine = "postgres"
+rds_engine_version = "15.3"
+rds_instance_class = "db.t3.medium"
+rds_allocated_storage = 100
+rds_storage_type = "gp3"
+rds_multi_az = true
+rds_backup_retention_days = 30
+rds_backup_window = "03:00-04:00"
+rds_maintenance_window = "sun:04:00-sun:05:00"
+
+# RDS Database Configuration
+rds_database_name = "carldb"
+rds_username = "carldbadmin"
+# NOTE: Use AWS Secrets Manager for password in production
+rds_password = "ChangeMe!SecurePassword123"
+
+# RDS Encryption (CC6.7 - Encryption)
+rds_storage_encrypted = true
+rds_kms_key_id = ""  # Leave empty to use AWS managed key, or provide custom KMS key ARN
+
+# RDS Enhanced Monitoring (CC7.2 - Monitoring)
+rds_enable_enhanced_monitoring = true
+rds_monitoring_interval = 60
+
+# RDS Logging (CC7.2 - Monitoring)
+rds_enable_cloudwatch_logs_exports = ["postgresql"]
+
+# RDS Backup Configuration (PI1 - Processing Integrity)
+rds_copy_tags_to_snapshot = true
+rds_delete_automated_backups = false
+
+# RDS Performance Insights (CC7.2 - Monitoring)
+rds_enable_performance_insights = true
+rds_performance_insights_retention_period = 7
+
+# Transit Gateway Configuration
+enable_transit_gateway = false
+transit_gateway_id = ""  # Leave empty if not using TGW
+
+# Security Group Configuration (CC6.1 - Logical Access)
+allowed_ingress_cidr_blocks = ["10.0.0.0/16"]
+allowed_rds_port = 5432
+
+# Tagging for compliance tracking
+tags = {
+  Compliance  = "SOC2"
+  Environment = "prod"
+  ManagedBy   = "Terraform"
+  CostCenter  = "Engineering"
+}
+
+# Enable VPC Flow Logs for network monitoring (CC7.2 - Monitoring)
+enable_vpc_flow_logs = true
+vpc_flow_logs_retention_days = 30
+
+# Enable CloudTrail for API audit logging (CC7.2 - Monitoring)
+enable_cloudtrail = true
+cloudtrail_retention_days = 2555  # 7 years for compliance
+
+# KMS Key Rotation (CC6.7 - Encryption)
+enable_kms_key_rotation = true
+```
